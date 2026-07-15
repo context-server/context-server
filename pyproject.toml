@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "context-server"
+version = "0.1.0"
+description = "Lightweight MCP server for semantic search over organizational markdown"
+requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+
+[project.urls]
+Repository = "https://github.com/shanemcd/context-server"
+
+[tool.maturin]
+bindings = "bin"
+strip = true
