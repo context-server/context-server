@@ -1,0 +1,203 @@
+mod embed;
+mod index;
+mod mcp;
+mod search;
+mod store;
+
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Parser, Debug)]
+#[command(name = "context-server", about = "Semantic search MCP server for markdown knowledge bases")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Index markdown into the SQLite database
+    Index {
+        /// Markdown file or directory
+        #[arg(long)]
+        input: PathBuf,
+        /// SQLite database path
+        #[arg(long, default_value = "context.db")]
+        db: PathBuf,
+        /// Chunk and print without embedding
+        #[arg(long)]
+        dry_run: bool,
+        /// Embedding batch size
+        #[arg(long, default_value_t = 16)]
+        batch: usize,
+    },
+    /// Start the MCP server (stdio)
+    Serve {
+        #[arg(long, default_value = "context.db")]
+        db: PathBuf,
+    },
+    /// Search the database (CLI)
+    Search {
+        #[arg(long, default_value = "context.db")]
+        db: PathBuf,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+        /// Query text
+        query: Vec<String>,
+    },
+    /// Embed a string (smoke test)
+    Embed {
+        text: Vec<String>,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Index {
+            input,
+            db,
+            dry_run,
+            batch,
+        } => run_index(input, db, dry_run, batch),
+        Commands::Serve { db } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(run_serve(db))
+        }
+        Commands::Search { db, limit, query } => run_search(db, limit, query),
+        Commands::Embed { text } => run_embed(text),
+    }
+}
+
+fn run_index(input: PathBuf, db_path: PathBuf, dry_run: bool, batch: usize) -> Result<()> {
+    let chunks = index::collect(&input)?;
+    if chunks.is_empty() {
+        bail!("no markdown chunks found under {}", input.display());
+    }
+    if dry_run {
+        println!("chunked {} pieces from {}", chunks.len(), input.display());
+        for c in &chunks {
+            println!("  {}: {}", c.source_path, index::format_chunk_debug(c));
+        }
+        return Ok(());
+    }
+
+    println!(
+        "indexing {} chunks from {} -> {}",
+        chunks.len(),
+        input.display(),
+        db_path.display()
+    );
+    let mut emb = embed::Embedder::new()?;
+    let batch = batch.max(1);
+    let mut vectors = Vec::with_capacity(chunks.len());
+    for i in (0..chunks.len()).step_by(batch) {
+        let end = (i + batch).min(chunks.len());
+        eprintln!("  embedding {}-{}/{}", i + 1, end, chunks.len());
+        let texts: Vec<String> = chunks[i..end].iter().map(|c| c.text.clone()).collect();
+        let batch_vecs = emb.embed_batch(&texts)?;
+        vectors.extend(batch_vecs);
+    }
+
+    let mut db = store::Db::open(&db_path)?;
+    db.replace_all(&chunks, &vectors)?;
+    println!("wrote {}", db.summary()?);
+    Ok(())
+}
+
+async fn run_serve(db_path: PathBuf) -> Result<()> {
+    use rmcp::ServiceExt;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+
+    let db = store::Db::open(&db_path)?;
+    let n = db.count()?;
+    if n == 0 {
+        bail!(
+            "database {} has no documents; run index first",
+            db_path.display()
+        );
+    }
+    let index = search::Index::load(&db)?;
+    let embedder = embed::Embedder::new()?;
+    let service = mcp::ContextService::new(db, index, embedder);
+
+    eprintln!(
+        "context-server: serving MCP stdio ({} chunks from {})",
+        n,
+        db_path.display()
+    );
+    let server = service.serve(rmcp::transport::stdio()).await?;
+    server.waiting().await?;
+    Ok(())
+}
+
+fn run_search(db_path: PathBuf, limit: usize, query: Vec<String>) -> Result<()> {
+    let q = query.join(" ").trim().to_string();
+    if q.is_empty() {
+        bail!("usage: context-server search --db context.db <query>");
+    }
+    let db = store::Db::open(&db_path)?;
+    let idx = search::Index::load(&db)?;
+    if idx.is_empty() {
+        bail!("database {} has no documents", db_path.display());
+    }
+    let mut emb = embed::Embedder::new()?;
+    let hits = idx.query(&mut emb, &q, limit)?;
+    println!("query={q:?} ({} indexed chunks)", idx.len());
+    for (i, h) in hits.iter().enumerate() {
+        let mut preview = h.text.clone();
+        if preview.len() > 240 {
+            preview = format!("{}...", &preview[..237]);
+        }
+        preview = preview.replace('\n', " ");
+        println!(
+            "\n{}. score={:.4}  {}#{}\n   {}",
+            i + 1,
+            h.score,
+            h.source_path,
+            h.chunk_index,
+            preview
+        );
+    }
+    Ok(())
+}
+
+fn run_embed(text: Vec<String>) -> Result<()> {
+    let t = text.join(" ").trim().to_string();
+    if t.is_empty() {
+        bail!("usage: context-server embed <text>");
+    }
+    let mut emb = embed::Embedder::new().context("init embedder")?;
+    let vec = emb.embed(&t)?;
+    print!("dim={} text={t:?}\nfirst8=[", vec.len());
+    for (i, v) in vec.iter().take(8).enumerate() {
+        if i > 0 {
+            print!(", ");
+        }
+        print!("{v:.6}");
+    }
+    println!("]");
+
+    let base = "The dog is running in the park";
+    let similar = "A canine is running through the park";
+    let other = "I love eating pizza for dinner";
+    let vecs = emb.embed_batch(&[base.into(), similar.into(), other.into()])?;
+    println!(
+        "cosine({base:?}, {similar:?}) = {:.4}",
+        embed::cosine(&vecs[0], &vecs[1])
+    );
+    println!(
+        "cosine({base:?}, {other:?}) = {:.4}",
+        embed::cosine(&vecs[0], &vecs[2])
+    );
+    Ok(())
+}

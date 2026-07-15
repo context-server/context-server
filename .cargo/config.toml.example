@@ -1,0 +1,8 @@
+# Optional: only needed on hosts where `-lstdc++` fails because
+# libstdc++.so is missing (Fedora often ships only libstdc++.so.6).
+#
+#   mkdir -p .linker && ln -sfn /usr/lib64/libstdc++.so.6 .linker/libstdc++.so
+#   cp .cargo/config.toml.example .cargo/config.toml
+#
+# [build]
+# rustflags = ["-L", "native=.linker"]

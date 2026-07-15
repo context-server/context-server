@@ -1,0 +1,10 @@
+/target/
+.linker/
+.cargo/config.toml
+context-server
+*.db
+*.onnx
+models/
+third_party/
+.fastembed_cache/
+**/.DS_Store
