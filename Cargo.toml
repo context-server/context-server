@@ -1,6 +1,6 @@
 [package]
 name = "context-server"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "Lightweight MCP server for semantic search over organizational markdown"
 license = "MIT"

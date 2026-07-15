@@ -48,6 +48,7 @@ COPY . .
 # linux_* platform tag (not manylinux_2_28): required for current ort prebuilts.
 RUN mkdir -p /out \
     && maturin build --release --locked --compatibility linux -o /out \
+    && maturin sdist -o /out \
     && ls -la /out
 
 CMD ["ls", "-la", "/out"]

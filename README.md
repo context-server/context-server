@@ -27,6 +27,14 @@ mkdir -p .linker && ln -sfn /usr/lib64/libstdc++.so.6 .linker/libstdc++.so
 export RUSTFLAGS="-L native=$(pwd)/.linker"
 ```
 
+## Install
+
+```bash
+pip install context-server
+```
+
+Platform wheels: Linux x86_64/aarch64 and macOS Apple Silicon. Requires a recent glibc on Linux (Ubuntu 24.04+).
+
 ## Build
 
 ```bash
