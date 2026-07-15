@@ -28,6 +28,7 @@ RUN apt-get update \
         curl \
         git \
         libssl-dev \
+        patchelf \
         pkg-config \
         python3 \
         python3-pip \
@@ -39,15 +40,15 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     && rustc --version \
     && cargo --version
 
-RUN python3 -m pip install --break-system-packages 'maturin>=1.0,<2.0' \
+RUN python3 -m pip install --break-system-packages 'maturin[patchelf]>=1.0,<2.0' \
     && maturin --version
 
 WORKDIR /src
 COPY . .
 
-# linux_* platform tag (not manylinux_2_28): required for current ort prebuilts.
+# Tag as manylinux_2_39; maturin/patchelf vendors libssl into the wheel for PyPI.
 RUN mkdir -p /out \
-    && maturin build --release --locked --compatibility linux -o /out \
+    && maturin build --release --locked --compatibility manylinux_2_39 -o /out \
     && maturin sdist -o /out \
     && ls -la /out
 

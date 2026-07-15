@@ -33,7 +33,7 @@ export RUSTFLAGS="-L native=$(pwd)/.linker"
 pip install context-server
 ```
 
-Platform wheels: Linux x86_64/aarch64 and macOS Apple Silicon. Requires a recent glibc on Linux (Ubuntu 24.04+).
+Platform wheels: Linux x86_64/aarch64 (`manylinux_2_39`, glibc 2.39+ / Ubuntu 24.04+) and macOS Apple Silicon.
 
 ## Build
 
