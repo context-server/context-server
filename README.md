@@ -83,7 +83,9 @@ context-server serve --db \
 
 Uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials)
 (`gcloud auth application-default login`, or `GOOGLE_APPLICATION_CREDENTIALS`).
-`index` still writes a local path only.
+When a sibling `{object}.sha256` exists (sha256sum format), the download is
+skipped if the local cache already matches; otherwise the DB is re-fetched and
+verified. `index` still writes a local path only.
 
 ### Claude Code
 
