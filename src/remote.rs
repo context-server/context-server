@@ -21,12 +21,13 @@ pub struct GcsRef {
 }
 
 impl GcsRef {
-    /// Bucket resource name for the Storage API.
+    /// Bucket resource name for the Storage object API.
+    ///
+    /// Object reads require the globally-unique form `projects/_/buckets/{id}`.
+    /// A project id in the URI is kept only for cache identity / display; the
+    /// Storage object API does not accept `projects/{project}/buckets/...`.
     pub fn bucket_resource(&self) -> String {
-        match &self.project {
-            Some(p) => format!("projects/{p}/buckets/{}", self.bucket),
-            None => format!("projects/_/buckets/{}", self.bucket),
-        }
+        format!("projects/_/buckets/{}", self.bucket)
     }
 
     fn checksum_object(&self) -> String {
@@ -52,6 +53,9 @@ pub enum DbSpec {
 }
 
 /// Parse a `--db` value into a local path or GCS reference.
+///
+/// Remote DBs must use a `gs://` URL. Bare `projects/...` paths are treated as
+/// local filesystem paths so we never guess remote intent from a relative path.
 pub fn parse_db_spec(spec: &str) -> Result<DbSpec> {
     let spec = spec.trim();
     if spec.is_empty() {
@@ -62,15 +66,12 @@ pub fn parse_db_spec(spec: &str) -> Result<DbSpec> {
         return Ok(DbSpec::Gcs(parse_gs_url(rest)?));
     }
 
-    if spec.starts_with("projects/") {
-        return Ok(DbSpec::Gcs(parse_resource_name(spec)?));
-    }
-
     Ok(DbSpec::Local(PathBuf::from(spec)))
 }
 
 fn parse_gs_url(rest: &str) -> Result<GcsRef> {
     // gs://projects/PROJECT/buckets/BUCKET/objects/OBJECT...
+    // Strip gs://; Storage API calls use projects/_/buckets/{bucket} only.
     if rest.starts_with("projects/") {
         return parse_resource_name(rest);
     }
@@ -179,9 +180,13 @@ pub fn resolve_db_blocking(spec: &str) -> Result<PathBuf> {
     }
 }
 
-async fn read_object_bytes(client: &Storage, bucket: &str, object: &str) -> Result<Vec<u8>> {
+async fn read_object_bytes(client: &Storage, gcs: &GcsRef, object: &str) -> Result<Vec<u8>> {
+    let bucket = gcs.bucket_resource();
+    // Object API requires projects/_/buckets/{id}. A project in the URI is
+    // kept for cache identity only; do not set quota project here (that needs
+    // serviceusage.services.use on the project).
     let mut resp = client
-        .read_object(bucket, object)
+        .read_object(&bucket, object)
         .send()
         .await
         .with_context(|| format!("read GCS object {bucket}/{object}"))?;
@@ -193,9 +198,8 @@ async fn read_object_bytes(client: &Storage, bucket: &str, object: &str) -> Resu
 }
 
 async fn fetch_remote_sha256(client: &Storage, gcs: &GcsRef) -> Result<Option<String>> {
-    let bucket = gcs.bucket_resource();
     let checksum_obj = gcs.checksum_object();
-    match read_object_bytes(client, &bucket, &checksum_obj).await {
+    match read_object_bytes(client, gcs, &checksum_obj).await {
         Ok(bytes) => {
             let text = String::from_utf8_lossy(&bytes);
             Ok(Some(parse_sha256_text(&text).with_context(|| {
@@ -343,9 +347,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_resource_name() {
+    fn bare_resource_name_is_local_path() {
+        let path =
+            "projects/itpc-gcp-hcm-pe-eng-claude/buckets/vme-cnv-context/objects/latest/cnv.db";
+        assert_eq!(
+            parse_db_spec(path).unwrap(),
+            DbSpec::Local(PathBuf::from(path))
+        );
+    }
+
+    #[test]
+    fn parse_gs_wrapped_resource_name() {
         let s = parse_db_spec(
-            "projects/itpc-gcp-hcm-pe-eng-claude/buckets/vme-cnv-context/objects/latest/cnv.db",
+            "gs://projects/itpc-gcp-hcm-pe-eng-claude/buckets/vme-cnv-context/objects/latest/cnv.db",
         )
         .unwrap();
         assert_eq!(
@@ -357,32 +371,14 @@ mod tests {
             })
         );
         if let DbSpec::Gcs(g) = s {
-            assert_eq!(
-                g.bucket_resource(),
-                "projects/itpc-gcp-hcm-pe-eng-claude/buckets/vme-cnv-context"
-            );
+            assert_eq!(g.bucket_resource(), "projects/_/buckets/vme-cnv-context");
         }
     }
 
     #[test]
-    fn parse_gs_wrapped_resource_name() {
-        let s = parse_db_spec(
-            "gs://projects/my-proj/buckets/my-bucket/objects/path/to/db.sqlite",
-        )
-        .unwrap();
-        assert_eq!(
-            s,
-            DbSpec::Gcs(GcsRef {
-                project: Some("my-proj".into()),
-                bucket: "my-bucket".into(),
-                object: "path/to/db.sqlite".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn parse_underscore_project() {
-        let s = parse_db_spec("projects/_/buckets/my-bucket/objects/obj.db").unwrap();
+    fn parse_gs_underscore_project() {
+        let s =
+            parse_db_spec("gs://projects/_/buckets/my-bucket/objects/obj.db").unwrap();
         assert_eq!(
             s,
             DbSpec::Gcs(GcsRef {

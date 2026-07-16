@@ -90,9 +90,9 @@ git push origin "$tag"    # triggers Release workflow → PyPI
 # Short form (globally unique bucket)
 context-server serve --db 'gs://vme-cnv-context/latest/cnv.db'
 
-# Project-qualified Google resource name
+# Project-qualified (still requires gs://; stripped for the Storage API)
 context-server serve --db \
-  'projects/itpc-gcp-hcm-pe-eng-claude/buckets/vme-cnv-context/objects/latest/cnv.db'
+  'gs://projects/itpc-gcp-hcm-pe-eng-claude/buckets/vme-cnv-context/objects/latest/cnv.db'
 ```
 
 Uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials)
@@ -109,7 +109,7 @@ claude mcp add --transport stdio --scope user context-server \
 ```
 
 Re-index when content changes, then restart the MCP session so `serve` reloads the DB into memory.
-For a GCS-backed DB, point `--db` at the `gs://` or `projects/.../objects/...` URI instead.
+For a GCS-backed DB, point `--db` at a `gs://...` URI.
 
 If Claude rarely calls the tools (tool search defers MCP tools), add `"alwaysLoad": true` to the server entry in your Claude MCP config so these tools stay visible every turn.
 

@@ -37,15 +37,15 @@ enum Commands {
     },
     /// Start the MCP server (stdio)
     Serve {
-        /// Local path, `gs://bucket/object`, or
-        /// `projects/PROJECT/buckets/BUCKET/objects/OBJECT`
+        /// Local path, or `gs://bucket/object` /
+        /// `gs://projects/PROJECT/buckets/BUCKET/objects/OBJECT`
         #[arg(long, default_value = "context.db")]
         db: String,
     },
     /// Search the database (CLI)
     Search {
-        /// Local path, `gs://bucket/object`, or
-        /// `projects/PROJECT/buckets/BUCKET/objects/OBJECT`
+        /// Local path, or `gs://bucket/object` /
+        /// `gs://projects/PROJECT/buckets/BUCKET/objects/OBJECT`
         #[arg(long, default_value = "context.db")]
         db: String,
         #[arg(long, default_value_t = 5)]
@@ -63,6 +63,10 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // google-cloud-storage / reqwest enable both rustls aws-lc-rs and ring features;
+    // pick an explicit process default before any TLS.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let cli = Cli::parse();
     match cli.command {
         Commands::Index {
