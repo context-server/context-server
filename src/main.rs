@@ -34,6 +34,12 @@ enum Commands {
         /// Embedding batch size
         #[arg(long, default_value_t = 16)]
         batch: usize,
+        /// MCP server instructions stored in DB meta (when to call this corpus)
+        #[arg(long)]
+        instructions: Option<String>,
+        /// Read MCP instructions from a UTF-8 text file
+        #[arg(long)]
+        instructions_file: Option<PathBuf>,
     },
     /// Start the MCP server (stdio)
     Serve {
@@ -74,7 +80,9 @@ fn main() -> Result<()> {
             db,
             dry_run,
             batch,
-        } => run_index(input, db, dry_run, batch),
+            instructions,
+            instructions_file,
+        } => run_index(input, db, dry_run, batch, instructions, instructions_file),
         Commands::Serve { db } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(run_serve(db))
@@ -89,7 +97,14 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_index(input: PathBuf, db_path: PathBuf, dry_run: bool, batch: usize) -> Result<()> {
+fn run_index(
+    input: PathBuf,
+    db_path: PathBuf,
+    dry_run: bool,
+    batch: usize,
+    instructions: Option<String>,
+    instructions_file: Option<PathBuf>,
+) -> Result<()> {
     let chunks = index::collect(&input)?;
     if chunks.is_empty() {
         bail!("no markdown chunks found under {}", input.display());
@@ -100,6 +115,24 @@ fn run_index(input: PathBuf, db_path: PathBuf, dry_run: bool, batch: usize) -> R
             println!("  {}: {}", c.source_path, index::format_chunk_debug(c));
         }
         return Ok(());
+    }
+
+    let instructions = match (instructions, instructions_file) {
+        (Some(_), Some(_)) => {
+            bail!("pass only one of --instructions or --instructions-file");
+        }
+        (Some(text), None) => Some(text),
+        (None, Some(path)) => {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("read instructions file {}", path.display()))?;
+            Some(text.trim().to_string())
+        }
+        (None, None) => None,
+    };
+    if let Some(ref text) = instructions {
+        if text.is_empty() {
+            bail!("instructions text is empty");
+        }
     }
 
     println!(
@@ -121,7 +154,14 @@ fn run_index(input: PathBuf, db_path: PathBuf, dry_run: bool, batch: usize) -> R
     }
 
     let mut db = store::Db::open(&db_path)?;
-    db.replace_all(&chunks, &vectors)?;
+    db.replace_all(&chunks, &vectors, instructions.as_deref())?;
+    if let Some(text) = db.get_meta("instructions")? {
+        eprintln!(
+            "MCP instructions ({} chars): {}",
+            text.len(),
+            text.chars().take(80).collect::<String>()
+        );
+    }
     println!("wrote {}", db.summary()?);
     Ok(())
 }

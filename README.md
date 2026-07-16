@@ -74,6 +74,11 @@ git push origin "$tag"    # triggers Release workflow → PyPI
 # Embed and write the database
 ./target/release/context-server index --input ./docs --db context.db
 
+# Optional: store MCP server instructions in the DB (when to call this corpus)
+./target/release/context-server index --input ./docs --db context.db \
+  --instructions-file ./mcp-instructions.txt
+# or: --instructions 'Call semantic_search for questions about …'
+
 # CLI search (hybrid by default; also --mode dense|lexical)
 ./target/release/context-server search --db context.db "how do we handle backports"
 
@@ -81,7 +86,11 @@ git push origin "$tag"    # triggers Release workflow → PyPI
 ./target/release/context-server serve --db context.db
 ```
 
-### Remote database (GCS)
+### MCP instructions in the DB
+
+`index --instructions` / `--instructions-file` writes `meta.instructions`.
+`serve` exposes that text as MCP `ServerInfo.instructions` so clients know when
+to call this corpus (falls back to a generic blurb if unset).
 
 `serve` and `search` accept a remote `--db` and download it into the local cache
 (`$XDG_CACHE_HOME/context-server/dbs/...`, or `~/.cache/...`) before opening:

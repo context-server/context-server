@@ -40,15 +40,28 @@ pub struct ContextService {
     pub db: Mutex<Db>,
     pub index: Index,
     pub embedder: Mutex<Embedder>,
+    instructions: String,
     tool_router: ToolRouter<Self>,
 }
 
+const DEFAULT_INSTRUCTIONS: &str = "Organizational markdown knowledge base (teams, people, ownership, processes, guides). \
+ALWAYS call semantic_search (or answer_question) before answering questions about \
+who owns what, team structure, managers, acronyms, backports, or internal process — \
+do not guess from general knowledge. Use list_documents to see what is indexed.";
+
 impl ContextService {
     pub fn new(db: Db, index: Index, embedder: Embedder) -> Self {
+        let instructions = db
+            .get_meta("instructions")
+            .ok()
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_INSTRUCTIONS.to_string());
         Self {
             db: Mutex::new(db),
             index,
             embedder: Mutex::new(embedder),
+            instructions,
             tool_router: Self::tool_router(),
         }
     }
@@ -159,13 +172,7 @@ impl ContextService {
 impl ServerHandler for ContextService {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            instructions: Some(
-                "Organizational markdown knowledge base (teams, people, ownership, processes, guides). \
-                 ALWAYS call semantic_search (or answer_question) before answering questions about \
-                 who owns what, team structure, managers, acronyms, backports, or internal process — \
-                 do not guess from general knowledge. Use list_documents to see what is indexed."
-                    .into(),
-            ),
+            instructions: Some(self.instructions.clone()),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }

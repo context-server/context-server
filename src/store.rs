@@ -61,7 +61,32 @@ CREATE TABLE IF NOT EXISTS meta (
         Ok(())
     }
 
-    pub fn replace_all(&mut self, chunks: &[Chunk], vectors: &[Vec<f32>]) -> Result<()> {
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM meta WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn replace_all(
+        &mut self,
+        chunks: &[Chunk],
+        vectors: &[Vec<f32>],
+        instructions: Option<&str>,
+    ) -> Result<()> {
         if chunks.len() != vectors.len() {
             bail!(
                 "chunks ({}) and vectors ({}) length mismatch",
@@ -70,6 +95,7 @@ CREATE TABLE IF NOT EXISTS meta (
             );
         }
         let tx = self.conn.transaction()?;
+        // Preserve meta.instructions unless the caller supplies a new value.
         tx.execute_batch("DELETE FROM embeddings; DELETE FROM documents;")?;
         {
             let mut doc_stmt = tx.prepare(
@@ -114,6 +140,13 @@ CREATE TABLE IF NOT EXISTS meta (
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![embed::DIM.to_string()],
         )?;
+        if let Some(text) = instructions {
+            tx.execute(
+                "INSERT INTO meta(key, value) VALUES ('instructions', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![text],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -299,11 +332,47 @@ mod tests {
             metadata: serde_json::Map::new(),
         }];
         let vectors = vec![vec![1.0f32; embed::DIM]];
-        db.replace_all(&chunks, &vectors).unwrap();
+        db.replace_all(&chunks, &vectors, None).unwrap();
         assert_eq!(db.count().unwrap(), 1);
         db.ensure_model_compatible().unwrap();
         let docs = db.load_all().unwrap();
         assert_eq!(docs[0].text, "hello");
         assert_eq!(docs[0].vector.len(), embed::DIM);
+    }
+
+    #[test]
+    fn instructions_meta_set_and_preserved() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let mut db = Db::open(&path).unwrap();
+        let chunks = vec![Chunk {
+            source_path: "a.md".into(),
+            chunk_index: 0,
+            text: "hello".into(),
+            headings: vec![],
+            metadata: serde_json::Map::new(),
+        }];
+        let vectors = vec![vec![1.0f32; embed::DIM]];
+        db.replace_all(&chunks, &vectors, Some("use for VME")).unwrap();
+        assert_eq!(
+            db.get_meta("instructions").unwrap().as_deref(),
+            Some("use for VME")
+        );
+        // Re-index without instructions flag keeps prior value.
+        db.replace_all(&chunks, &vectors, None).unwrap();
+        assert_eq!(
+            db.get_meta("instructions").unwrap().as_deref(),
+            Some("use for VME")
+        );
+        db.replace_all(&chunks, &vectors, Some("updated")).unwrap();
+        assert_eq!(
+            db.get_meta("instructions").unwrap().as_deref(),
+            Some("updated")
+        );
+        db.set_meta("instructions", "via set_meta").unwrap();
+        assert_eq!(
+            db.get_meta("instructions").unwrap().as_deref(),
+            Some("via set_meta")
+        );
     }
 }
