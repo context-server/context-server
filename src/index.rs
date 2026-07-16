@@ -6,6 +6,12 @@ use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
+/// Soft cap on embedded text length. MiniLM truncates around ~256 tokens;
+/// ~4 chars/token ⇒ keep chunks under this so the tail is not dropped.
+pub const MAX_CHUNK_CHARS: usize = 900;
+/// Overlap between consecutive splits of an oversized section.
+pub const CHUNK_OVERLAP_CHARS: usize = 150;
+
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub source_path: String,
@@ -14,7 +20,6 @@ pub struct Chunk {
     pub headings: Vec<String>,
     pub metadata: serde_json::Map<String, serde_json::Value>,
 }
-
 /// Split markdown into chunks on ## and ### boundaries.
 pub fn split_markdown(source_path: &str, content: &str) -> Vec<Chunk> {
     let content = strip_front_matter(content);
@@ -26,7 +31,7 @@ pub fn split_markdown(source_path: &str, content: &str) -> Vec<Chunk> {
     let mut body: Vec<String> = Vec::new();
     let mut chunks: Vec<Chunk> = Vec::new();
 
-    let mut emit = |body: &mut Vec<String>,
+    let emit = |body: &mut Vec<String>,
                     doc_title: &str,
                     h2: &str,
                     h3: &str,
@@ -117,9 +122,79 @@ pub fn split_markdown(source_path: &str, content: &str) -> Vec<Chunk> {
         &mut chunks,
         source_path,
     );
-    chunks
+    split_oversized(chunks)
 }
 
+/// Split any chunk whose embedded text exceeds [`MAX_CHUNK_CHARS`], keeping the
+/// heading prefix on each piece and overlapping body windows.
+fn split_oversized(chunks: Vec<Chunk>) -> Vec<Chunk> {
+    let mut out = Vec::new();
+    for chunk in chunks {
+        if chunk.text.chars().count() <= MAX_CHUNK_CHARS {
+            out.push(chunk);
+            continue;
+        }
+        let prefix = if chunk.headings.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n\n", chunk.headings.join(" > "))
+        };
+        let body = chunk
+            .text
+            .strip_prefix(&prefix)
+            .unwrap_or(chunk.text.as_str());
+        let prefix_len = prefix.chars().count();
+        let body_budget = MAX_CHUNK_CHARS.saturating_sub(prefix_len).max(200);
+        let overlap = CHUNK_OVERLAP_CHARS.min(body_budget / 3);
+
+        let body_chars: Vec<char> = body.chars().collect();
+        if body_chars.is_empty() {
+            out.push(chunk);
+            continue;
+        }
+
+        let mut start = 0usize;
+        while start < body_chars.len() {
+            let mut end = (start + body_budget).min(body_chars.len());
+            // Prefer breaking on whitespace when not at the end.
+            if end < body_chars.len() {
+                if let Some(rel) = body_chars[start..end]
+                    .iter()
+                    .rposition(|c| c.is_whitespace())
+                {
+                    if rel > body_budget / 4 {
+                        end = start + rel;
+                    }
+                }
+            }
+            let piece: String = body_chars[start..end].iter().collect();
+            let piece = piece.trim();
+            if !piece.is_empty() {
+                let text = if prefix.is_empty() {
+                    piece.to_string()
+                } else {
+                    format!("{prefix}{piece}")
+                };
+                out.push(Chunk {
+                    source_path: chunk.source_path.clone(),
+                    chunk_index: 0, // renumbered below
+                    text,
+                    headings: chunk.headings.clone(),
+                    metadata: chunk.metadata.clone(),
+                });
+            }
+            if end >= body_chars.len() {
+                break;
+            }
+            let next = end.saturating_sub(overlap);
+            start = if next <= start { end } else { next };
+        }
+    }
+    for (i, c) in out.iter_mut().enumerate() {
+        c.chunk_index = i;
+    }
+    out
+}
 fn strip_front_matter(content: &str) -> String {
     if !content.starts_with("---") {
         return content.to_string();
@@ -255,5 +330,21 @@ Upstream repos use stable branches.
         let chunks = split_markdown("x.md", md);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].headings, ["Title", "Has Content"]);
+    }
+
+    #[test]
+    fn oversized_section_is_split() {
+        let long = "word ".repeat(400); // well over MAX_CHUNK_CHARS
+        let md = format!("# Doc\n\n## Big\n\n{long}");
+        let chunks = split_markdown("big.md", &md);
+        assert!(chunks.len() > 1, "expected split, got {}", chunks.len());
+        for c in &chunks {
+            assert!(
+                c.text.chars().count() <= MAX_CHUNK_CHARS + 50,
+                "chunk too long: {}",
+                c.text.chars().count()
+            );
+            assert!(c.text.contains("Doc > Big") || c.headings.contains(&"Big".into()));
+        }
     }
 }

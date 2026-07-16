@@ -15,7 +15,7 @@ A single-binary MCP server that indexes organizational markdown into a local vec
 ```text
 context-server index --input <dir> --db context.db
 context-server serve --db context.db
-context-server search --db context.db "<query>"
+context-server search --db context.db [--mode hybrid|dense|lexical] "<query>"
 context-server embed "<text>"
 ```
 
@@ -23,10 +23,11 @@ context-server embed "<text>"
 
 | Module | Role |
 |--------|------|
-| `embed` | fastembed AllMiniLML6V2 (384-dim, L2-normalized) |
-| `index` | Markdown heading chunker (`##` / `###`), directory walk |
-| `store` | SQLite: documents + embeddings |
-| `search` | Brute-force cosine (dot product on normalized vectors) |
+| `embed` | fastembed AllMiniLML6V2 (384-dim, L2-normalized); `MODEL_ID` constant |
+| `index` | Markdown heading chunker (`##` / `###`), oversized split + overlap |
+| `store` | SQLite: documents + embeddings + `meta` (model_id, dim) |
+| `bm25` | In-memory BM25 + reciprocal rank fusion |
+| `search` | Hybrid dense + BM25 (default), or dense/lexical only |
 | `mcp` | rmcp stdio tools |
 | `main` | clap CLI |
 
@@ -34,8 +35,19 @@ context-server embed "<text>"
 
 - `documents`: id, source_path, chunk_index, text, headings (JSON), metadata (JSON)
 - `embeddings`: id, dim, vector (little-endian float32 blob)
+- `meta`: key/value (`model_id`, `dim`) — refuse search if incompatible
 
 `index` replaces the full DB contents each run (`ReplaceAll`).
+
+## Chunking
+
+1. Split on `#` / `##` / `###`
+2. Prefix each chunk with `Title > H2 > H3`
+3. If embedded text exceeds ~900 chars, split the body with ~150-char overlap (MiniLM truncates ~256 tokens)
+
+## Search
+
+Default **hybrid**: rank by dense cosine and by BM25, fuse with reciprocal rank fusion (`k=60`). Exact tokens (usernames, acronyms, IDs) come from BM25; paraphrase matching from dense.
 
 ## Input contract
 
@@ -43,20 +55,22 @@ Only `.md` / `.markdown` files are indexed. Structured sources (team YAML, etc.)
 
 ## MCP tools
 
-- `semantic_search(query, limit)`
+- `semantic_search(query, limit)` — hybrid
 - `list_documents(limit)`
 - `answer_question(question, limit)` — retrieval only
 
 ## Status
 
 - [x] Index / search / embed / serve
-- [x] Markdown chunking + unit tests
+- [x] Markdown chunking + oversized splits + unit tests
+- [x] Hybrid BM25 + dense (RRF)
+- [x] Model id / dim recorded in DB
 - [x] Static ORT (no `libonnxruntime.so` in `ldd`)
 - [x] Claude Code stdio MCP verified against a local knowledge base
+- [x] PyPI wheels via Containerfile + maturin
 
 ## Roadmap
 
-1. Multi-arch release binaries (linux/amd64 first)
-2. Optional musl / static OpenSSL builds for fewer system deps
-3. macOS / Windows support as needed
-4. Incremental re-index (per-file) instead of full ReplaceAll
+1. Incremental re-index (per-file) instead of full ReplaceAll
+2. Optional stronger embedding models behind a flag
+3. Optional musl / static OpenSSL builds for fewer system deps

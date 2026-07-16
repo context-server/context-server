@@ -1,5 +1,6 @@
 //! SQLite storage for chunks and embeddings.
 
+use crate::embed::{self, MODEL_ID};
 use crate::index::Chunk;
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection};
@@ -43,13 +44,20 @@ CREATE TABLE IF NOT EXISTS embeddings (
   dim INTEGER NOT NULL,
   vector BLOB NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 "#,
         )?;
         Ok(Self { conn })
     }
 
     pub fn clear(&self) -> Result<()> {
-        self.conn.execute_batch("DELETE FROM embeddings; DELETE FROM documents;")?;
+        self.conn.execute_batch(
+            "DELETE FROM embeddings; DELETE FROM documents; DELETE FROM meta;",
+        )?;
         Ok(())
     }
 
@@ -74,6 +82,15 @@ CREATE TABLE IF NOT EXISTS embeddings (
                 if vec.is_empty() {
                     bail!("empty vector for {}[{}]", c.source_path, c.chunk_index);
                 }
+                if vec.len() != embed::DIM {
+                    bail!(
+                        "vector dim {} != expected {} for {}[{}]",
+                        vec.len(),
+                        embed::DIM,
+                        c.source_path,
+                        c.chunk_index
+                    );
+                }
                 let headings = serde_json::to_string(&c.headings)?;
                 let metadata = serde_json::to_string(&c.metadata)?;
                 doc_stmt.execute(params![
@@ -87,8 +104,63 @@ CREATE TABLE IF NOT EXISTS embeddings (
                 emb_stmt.execute(params![id, vec.len() as i64, float32_to_bytes(vec)])?;
             }
         }
+        tx.execute(
+            "INSERT INTO meta(key, value) VALUES ('model_id', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![MODEL_ID],
+        )?;
+        tx.execute(
+            "INSERT INTO meta(key, value) VALUES ('dim', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![embed::DIM.to_string()],
+        )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Ensure DB embeddings were built with the current model.
+    pub fn ensure_model_compatible(&self) -> Result<()> {
+        let model: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'model_id'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let dim: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'dim'", [], |r| r.get(0))
+            .ok();
+
+        match (model.as_deref(), dim.as_deref()) {
+            (None, _) | (_, None) => {
+                // Legacy DBs from before meta existed — verify dim from first embedding.
+                let stored_dim: Option<i64> = self
+                    .conn
+                    .query_row("SELECT dim FROM embeddings LIMIT 1", [], |r| r.get(0))
+                    .ok();
+                if let Some(d) = stored_dim {
+                    if d as usize != embed::DIM {
+                        bail!(
+                            "database embedding dim {d} != {MODEL_ID} dim {}; re-run index",
+                            embed::DIM
+                        );
+                    }
+                }
+                Ok(())
+            }
+            (Some(m), Some(d)) => {
+                if m != MODEL_ID {
+                    bail!("database model {m:?} != current {MODEL_ID:?}; re-run index");
+                }
+                let d: usize = d.parse().context("parse meta.dim")?;
+                if d != embed::DIM {
+                    bail!("database dim {d} != {MODEL_ID} dim {}; re-run index", embed::DIM);
+                }
+                Ok(())
+            }
+        }
     }
 
     pub fn count(&self) -> Result<usize> {
@@ -129,6 +201,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     }
 
     pub fn load_all(&self) -> Result<Vec<Document>> {
+        self.ensure_model_compatible()?;
         let mut stmt = self.conn.prepare(
             r#"
 SELECT d.id, d.source_path, d.chunk_index, d.text, d.headings, d.metadata, e.dim, e.vector
@@ -178,11 +251,12 @@ ORDER BY d.id
         let shown: Vec<&str> = sources.iter().take(5).map(|s| s.as_str()).collect();
         let extra = if sources.len() > 5 { ", …" } else { "" };
         Ok(format!(
-            "{} chunks across {} files ({}{})",
+            "{} chunks across {} files ({}{}) [{MODEL_ID}/{}d]",
             n,
             sources.len(),
             shown.join(", "),
-            extra
+            extra,
+            embed::DIM
         ))
     }
 }
@@ -224,11 +298,12 @@ mod tests {
             headings: vec!["H".into()],
             metadata: serde_json::Map::new(),
         }];
-        let vectors = vec![vec![1.0f32, 0.0, 0.0]];
+        let vectors = vec![vec![1.0f32; embed::DIM]];
         db.replace_all(&chunks, &vectors).unwrap();
         assert_eq!(db.count().unwrap(), 1);
+        db.ensure_model_compatible().unwrap();
         let docs = db.load_all().unwrap();
         assert_eq!(docs[0].text, "hello");
-        assert_eq!(docs[0].vector, vec![1.0, 0.0, 0.0]);
+        assert_eq!(docs[0].vector.len(), embed::DIM);
     }
 }

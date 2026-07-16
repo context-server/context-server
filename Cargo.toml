@@ -1,6 +1,6 @@
 [package]
 name = "context-server"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "Lightweight MCP server for semantic search over organizational markdown"
 license = "MIT"
@@ -14,13 +14,17 @@ exclude = [".linker/", "target/", "*.db"]
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+dirs = "6.0.0"
 fastembed = "5"
+google-cloud-storage = "1.16.0"
+hex = "0.4.3"
 regex = "1"
 rmcp = { version = "0.16", features = ["server", "transport-io", "macros", "schemars"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

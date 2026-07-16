@@ -1,7 +1,7 @@
 //! MCP stdio server tools.
 
 use crate::embed::Embedder;
-use crate::search::Index;
+use crate::search::{Index, SearchMode};
 use crate::store::Db;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -12,23 +12,27 @@ use std::sync::Mutex;
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchRequest {
-    #[schemars(description = "the search query")]
+    #[schemars(
+        description = "Natural-language search query. Include names, teams, acronyms, or topic keywords (e.g. 'who manages CNV storage', 'dkenigsb', 'backport process')."
+    )]
     pub query: String,
-    #[schemars(description = "max results to return (default 5)")]
+    #[schemars(description = "Max passages to return (default 5)")]
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListRequest {
-    #[schemars(description = "max documents to list (default 50)")]
+    #[schemars(description = "Max chunks to list (default 50)")]
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct QuestionRequest {
-    #[schemars(description = "the question to answer from indexed content")]
+    #[schemars(
+        description = "Question about people, teams, ownership, processes, or org docs in the knowledge base."
+    )]
     pub question: String,
-    #[schemars(description = "candidate passages to consider (default 3)")]
+    #[schemars(description = "Candidate passages to consider (default 3)")]
     pub limit: Option<usize>,
 }
 
@@ -52,7 +56,9 @@ impl ContextService {
 
 #[tool_router]
 impl ContextService {
-    #[tool(description = "Semantic search over the indexed knowledge base. Returns ranked passages with similarity scores.")]
+    #[tool(
+        description = "REQUIRED for org/knowledge questions: search the indexed markdown knowledge base (people, teams, ownership, processes, guides). Call this instead of guessing whenever the user asks who owns something, how a process works, or anything that may be in team/org docs. Returns ranked passages with scores."
+    )]
     fn semantic_search(
         &self,
         Parameters(SearchRequest { query, limit }): Parameters<SearchRequest>,
@@ -62,13 +68,18 @@ impl ContextService {
             return "error: query is required".into();
         }
         let mut emb = self.embedder.lock().unwrap();
-        match self.index.query(&mut emb, &query, limit) {
+        match self
+            .index
+            .query(&mut emb, &query, limit, SearchMode::Hybrid)
+        {
             Ok(hits) => format_hits(&query, &hits),
             Err(e) => format!("error: {e:#}"),
         }
     }
 
-    #[tool(description = "List indexed document chunks (source path, headings, text preview).")]
+    #[tool(
+        description = "List what is indexed in the knowledge base (paths, headings, previews). Use when the user asks what docs are available or to browse the corpus."
+    )]
     fn list_documents(
         &self,
         Parameters(ListRequest { limit }): Parameters<ListRequest>,
@@ -100,7 +111,9 @@ impl ContextService {
         }
     }
 
-    #[tool(description = "Answer a question by returning the most relevant passage from the knowledge base (search only; no generative QA).")]
+    #[tool(
+        description = "Ask a question against the knowledge base and get the best matching passage. Prefer semantic_search for exploration; use this for a direct 'who/what/how' answer from indexed docs (retrieval only, not generative)."
+    )]
     fn answer_question(
         &self,
         Parameters(QuestionRequest { question, limit }): Parameters<QuestionRequest>,
@@ -110,13 +123,21 @@ impl ContextService {
             return "error: question is required".into();
         }
         let mut emb = self.embedder.lock().unwrap();
-        match self.index.query(&mut emb, &question, limit) {
+        match self
+            .index
+            .query(&mut emb, &question, limit, SearchMode::Hybrid)
+        {
             Ok(hits) if hits.is_empty() => "No relevant passages found.".into(),
             Ok(hits) => {
                 let top = &hits[0];
                 let mut out = format!(
-                    "Best match (score={:.4}) from {}#{}\n\n{}\n",
-                    top.score, top.source_path, top.chunk_index, top.text
+                    "Best match (score={:.4}, dense={:.4}, lexical={:.4}) from {}#{}\n\n{}\n",
+                    top.score,
+                    top.dense_score,
+                    top.lexical_score,
+                    top.source_path,
+                    top.chunk_index,
+                    top.text
                 );
                 if hits.len() > 1 {
                     out.push_str("\n---\nOther candidates:\n");
@@ -138,6 +159,13 @@ impl ContextService {
 impl ServerHandler for ContextService {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
+            instructions: Some(
+                "Organizational markdown knowledge base (teams, people, ownership, processes, guides). \
+                 ALWAYS call semantic_search (or answer_question) before answering questions about \
+                 who owns what, team structure, managers, acronyms, backports, or internal process — \
+                 do not guess from general knowledge. Use list_documents to see what is indexed."
+                    .into(),
+            ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }
@@ -145,16 +173,18 @@ impl ServerHandler for ContextService {
 }
 
 fn format_hits(query: &str, hits: &[crate::search::ResultHit]) -> String {
-    let mut out = format!("Results for {query:?}:\n");
+    let mut out = format!("Results for {query:?} (hybrid):\n");
     if hits.is_empty() {
         out.push_str("(no hits)\n");
         return out;
     }
     for (i, h) in hits.iter().enumerate() {
         out.push_str(&format!(
-            "\n{}. score={:.4}  {}#{}\n{}\n",
+            "\n{}. score={:.4} (dense={:.4} lexical={:.4})  {}#{}\n{}\n",
             i + 1,
             h.score,
+            h.dense_score,
+            h.lexical_score,
             h.source_path,
             h.chunk_index,
             h.text

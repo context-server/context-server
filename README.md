@@ -7,8 +7,8 @@ One Rust binary. ONNX Runtime is **statically linked** (via [`ort`](https://gith
 ## Features
 
 - Index markdown into a local SQLite vector database
-- Chunk by `##` / `###` headings (hierarchy kept in each chunk)
-- Semantic search with All-MiniLM-L6-v2 (384-dim)
+- Chunk by `##` / `###` headings (hierarchy kept in each chunk); oversized sections are split with overlap
+- Hybrid search: dense embeddings (All-MiniLM-L6-v2) + BM25, fused with reciprocal rank fusion
 - MCP tools: `semantic_search`, `list_documents`, `answer_question`
 - CLI for index / search / embed smoke tests
 
@@ -60,12 +60,30 @@ Same Containerfile CI uses (Ubuntu 24.04 / glibc 2.39 — required by current OR
 # Embed and write the database
 ./target/release/context-server index --input ./docs --db context.db
 
-# CLI search
+# CLI search (hybrid by default; also --mode dense|lexical)
 ./target/release/context-server search --db context.db "how do we handle backports"
 
 # MCP stdio server
 ./target/release/context-server serve --db context.db
 ```
+
+### Remote database (GCS)
+
+`serve` and `search` accept a remote `--db` and download it into the local cache
+(`$XDG_CACHE_HOME/context-server/dbs/...`, or `~/.cache/...`) before opening:
+
+```bash
+# Short form (globally unique bucket)
+context-server serve --db 'gs://vme-cnv-context/latest/cnv.db'
+
+# Project-qualified Google resource name
+context-server serve --db \
+  'projects/itpc-gcp-hcm-pe-eng-claude/buckets/vme-cnv-context/objects/latest/cnv.db'
+```
+
+Uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials)
+(`gcloud auth application-default login`, or `GOOGLE_APPLICATION_CREDENTIALS`).
+`index` still writes a local path only.
 
 ### Claude Code
 
@@ -75,6 +93,9 @@ claude mcp add --transport stdio --scope user context-server \
 ```
 
 Re-index when content changes, then restart the MCP session so `serve` reloads the DB into memory.
+For a GCS-backed DB, point `--db` at the `gs://` or `projects/.../objects/...` URI instead.
+
+If Claude rarely calls the tools (tool search defers MCP tools), add `"alwaysLoad": true` to the server entry in your Claude MCP config so these tools stay visible every turn.
 
 ## MCP tools
 
@@ -88,10 +109,11 @@ Re-index when content changes, then restart the MCP session so `serve` reloads t
 
 | Piece | Choice |
 |-------|--------|
-| Embeddings | fastembed → All-MiniLM-L6-v2, L2-normalized |
+| Embeddings | fastembed → All-MiniLM-L6-v2, L2-normalized (model id stored in DB) |
 | Inference | ort (static ONNX Runtime) |
 | Storage | rusqlite (bundled SQLite), float32 blobs |
-| Search | Brute-force cosine (fine for &lt;100K chunks) |
+| Search | Hybrid: cosine dense + BM25 → reciprocal rank fusion |
+| Chunking | `##` / `###` + split when text exceeds ~900 chars |
 | MCP | [rmcp](https://github.com/modelcontextprotocol/rust-sdk) stdio |
 
 See [PLAN.md](PLAN.md) for design notes and roadmap.
