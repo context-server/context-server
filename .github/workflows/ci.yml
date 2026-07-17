@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            libssl-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+  # Same platforms as release.yml (publish stays tag-only).
+  linux:
+    name: Linux wheel (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="$(./scripts/next-calver.sh)"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using VERSION=$VERSION"
+
+      # Ubuntu 24.04 Containerfile: ort prebuilts need glibc >= ~2.38.
+      - name: Build wheel with Containerfile
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg "VERSION=${{ steps.ver.outputs.version }}" \
+            -t context-server-wheel \
+            -f Containerfile .
+          cid="$(docker create context-server-wheel)"
+          mkdir -p dist
+          docker cp "$cid:/out/." dist/
+          docker rm "$cid"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.arch }}
+          path: dist/*
+
+  macos:
+    name: macOS wheel (aarch64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="$(./scripts/next-calver.sh)"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          chmod +x scripts/*.sh
+          ./scripts/set-version.sh "$VERSION"
+
+      # ort does not ship prebuilt ONNX Runtime for x86_64-apple-darwin.
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: aarch64-apple-darwin
+          args: --release --locked --out dist
+          manylinux: 'off'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-aarch64
+          path: dist/*

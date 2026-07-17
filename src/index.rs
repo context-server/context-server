@@ -32,11 +32,11 @@ pub fn split_markdown(source_path: &str, content: &str) -> Vec<Chunk> {
     let mut chunks: Vec<Chunk> = Vec::new();
 
     let emit = |body: &mut Vec<String>,
-                    doc_title: &str,
-                    h2: &str,
-                    h3: &str,
-                    chunks: &mut Vec<Chunk>,
-                    source_path: &str| {
+                doc_title: &str,
+                h2: &str,
+                h3: &str,
+                chunks: &mut Vec<Chunk>,
+                source_path: &str| {
         let text = body.join("\n").trim().to_string();
         body.clear();
         if text.is_empty() {
@@ -73,39 +73,18 @@ pub fn split_markdown(source_path: &str, content: &str) -> Vec<Chunk> {
             let title = caps[2].trim().to_string();
             match level {
                 1 => {
-                    emit(
-                        &mut body,
-                        &doc_title,
-                        &h2,
-                        &h3,
-                        &mut chunks,
-                        source_path,
-                    );
+                    emit(&mut body, &doc_title, &h2, &h3, &mut chunks, source_path);
                     doc_title = title;
                     h2.clear();
                     h3.clear();
                 }
                 2 => {
-                    emit(
-                        &mut body,
-                        &doc_title,
-                        &h2,
-                        &h3,
-                        &mut chunks,
-                        source_path,
-                    );
+                    emit(&mut body, &doc_title, &h2, &h3, &mut chunks, source_path);
                     h2 = title;
                     h3.clear();
                 }
                 3 => {
-                    emit(
-                        &mut body,
-                        &doc_title,
-                        &h2,
-                        &h3,
-                        &mut chunks,
-                        source_path,
-                    );
+                    emit(&mut body, &doc_title, &h2, &h3, &mut chunks, source_path);
                     h3 = title;
                 }
                 _ => body.push(line.to_string()),
@@ -114,14 +93,7 @@ pub fn split_markdown(source_path: &str, content: &str) -> Vec<Chunk> {
         }
         body.push(line.to_string());
     }
-    emit(
-        &mut body,
-        &doc_title,
-        &h2,
-        &h3,
-        &mut chunks,
-        source_path,
-    );
+    emit(&mut body, &doc_title, &h2, &h3, &mut chunks, source_path);
     split_oversized(chunks)
 }
 
@@ -315,7 +287,12 @@ Required:
 Upstream repos use stable branches.
 "#;
         let chunks = split_markdown("backport-process.md", md);
-        assert_eq!(chunks.len(), 5, "{:?}", chunks.iter().map(format_chunk_debug).collect::<Vec<_>>());
+        assert_eq!(
+            chunks.len(),
+            5,
+            "{:?}",
+            chunks.iter().map(format_chunk_debug).collect::<Vec<_>>()
+        );
         assert_eq!(chunks[0].headings, ["Backport Process"]);
         assert!(chunks[0].text.contains("Intro paragraph"));
         assert_eq!(

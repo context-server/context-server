@@ -44,7 +44,8 @@ pub struct ContextService {
     tool_router: ToolRouter<Self>,
 }
 
-const DEFAULT_INSTRUCTIONS: &str = "Organizational markdown knowledge base (teams, people, ownership, processes, guides). \
+const DEFAULT_INSTRUCTIONS: &str =
+    "Organizational markdown knowledge base (teams, people, ownership, processes, guides). \
 ALWAYS call semantic_search (or answer_question) before answering questions about \
 who owns what, team structure, managers, acronyms, backports, or internal process — \
 do not guess from general knowledge. Use list_documents to see what is indexed.";
@@ -93,10 +94,7 @@ impl ContextService {
     #[tool(
         description = "List what is indexed in the knowledge base (paths, headings, previews). Use when the user asks what docs are available or to browse the corpus."
     )]
-    fn list_documents(
-        &self,
-        Parameters(ListRequest { limit }): Parameters<ListRequest>,
-    ) -> String {
+    fn list_documents(&self, Parameters(ListRequest { limit }): Parameters<ListRequest>) -> String {
         let limit = limit.unwrap_or(50);
         let db = self.db.lock().unwrap();
         match db.list(limit) {
@@ -186,14 +184,20 @@ fn format_hits(query: &str, hits: &[crate::search::ResultHit]) -> String {
         return out;
     }
     for (i, h) in hits.iter().enumerate() {
+        let heading = if h.headings.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", h.headings.join(" > "))
+        };
         out.push_str(&format!(
-            "\n{}. score={:.4} (dense={:.4} lexical={:.4})  {}#{}\n{}\n",
+            "\n{}. score={:.4} (dense={:.4} lexical={:.4})  {}#{}{}\n{}\n",
             i + 1,
             h.score,
             h.dense_score,
             h.lexical_score,
             h.source_path,
             h.chunk_index,
+            heading,
             h.text
         ));
     }
