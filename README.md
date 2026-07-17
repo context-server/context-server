@@ -1,101 +1,37 @@
 # context-server
 
-A lightweight [MCP](https://modelcontextprotocol.io/) server for **semantic search over markdown knowledge bases**.
+Semantic search over a folder of markdown, served as an [MCP](https://modelcontextprotocol.io/) server for coding agents.
 
-One Rust binary. ONNX Runtime is **statically linked** (via [`ort`](https://github.com/pykeio/ort) / [`fastembed`](https://github.com/Anush008/fastembed-rs)) — no separate `libonnxruntime.so` to ship. SQLite is bundled. Built for AI coding agents (Claude Code, Cursor, etc.).
+Index once into a SQLite DB (embeddings + BM25). Point Claude Code, Cursor, or any MCP client at `serve`, and the agent can search that corpus instead of guessing from memory.
 
-## Features
+One Rust binary. ONNX Runtime is linked in via [`ort`](https://github.com/pykeio/ort) / [`fastembed`](https://github.com/Anush008/fastembed-rs) — no separate `libonnxruntime` to ship. SQLite is bundled.
 
-- Index markdown into a local SQLite vector database
-- Chunk by `##` / `###` headings (hierarchy kept in each chunk); oversized sections are split with overlap
-- Hybrid search: dense embeddings (All-MiniLM-L6-v2) + BM25, fused with reciprocal rank fusion
-- MCP tools: `semantic_search`, `list_documents`, `answer_question`
-- CLI for index / search / embed smoke tests
-
-**Input contract:** feed searchable prose (markdown). Structured data (YAML, etc.) should be converted to markdown *before* indexing — raw YAML in code fences searches poorly.
-
-## Requirements
-
-- Rust 1.75+ (edition 2021)
-- Linux x86_64 (primary target today)
-- At build/link time: a C++ standard library (`libstdc++`) and OpenSSL development headers if your platform needs them for `native-tls`
-
-On Fedora/RHEL, if the linker cannot find `-lstdc++` (only `libstdc++.so.6` is installed):
-
-```bash
-mkdir -p .linker && ln -sfn /usr/lib64/libstdc++.so.6 .linker/libstdc++.so
-export RUSTFLAGS="-L native=$(pwd)/.linker"
-```
-
-## Install
+## Quick start
 
 ```bash
 pip install context-server
+# or: uvx context-server@latest …
+
+context-server index --input ./docs --db context.db
+context-server search --db context.db "how do we handle backports"
+context-server serve --db context.db
 ```
 
-Platform wheels: Linux x86_64/aarch64 (`manylinux_2_39`, glibc 2.39+ / Ubuntu 24.04+) and macOS Apple Silicon.
+Wheels: Linux x86_64/aarch64 (`manylinux_2_39` / glibc 2.39+, e.g. Ubuntu 24.04+) and macOS Apple Silicon.
 
-## Build
+The first embedding run downloads All-MiniLM-L6-v2 into the local Hugging Face / fastembed cache (once, tens of MB).
 
-```bash
-cargo build --release
-```
-
-The first embedding run downloads the MiniLM model into the local Hugging Face / fastembed cache (~tens of MB, once).
-
-### Linux wheels (Podman)
-
-Same Containerfile CI uses (Ubuntu 24.04 / glibc 2.39 — required by current ORT prebuilts):
+### Optional: tell the agent when to use this corpus
 
 ```bash
-./scripts/build-wheel.sh   # writes dist/*.whl
-VERSION=2026.716.1 ./scripts/build-wheel.sh  # optional CalVer override
-```
-
-## Releasing (CalVer)
-
-Versions are **CalVer** `YYYY.MMDD.N` (e.g. `2026.716.1`) so they are valid for
-both Cargo SemVer and PyPI. `pyproject.toml` takes the version from
-`Cargo.toml`; release CI rewrites that from the git tag before building.
-
-```bash
-tag="$(./scripts/next-calver.sh)"
-git tag -a "$tag" -m "$tag"
-git push origin "$tag"    # triggers Release workflow → PyPI
-```
-
-`setuptools-scm` is not used (maturin cannot consume it).
-
-## Usage
-
-### Local database
-
-```bash
-# Preview how documents will be chunked
-./target/release/context-server index --input ./docs --dry-run
-
-# Embed and write the database
-./target/release/context-server index --input ./docs --db context.db
-
-# Optional: store MCP server instructions in the DB (when to call this corpus)
-./target/release/context-server index --input ./docs --db context.db \
+context-server index --input ./docs --db context.db \
   --instructions-file ./mcp-instructions.txt
-# or: --instructions 'Call semantic_search for questions about …'
-
-# CLI search (hybrid by default; also --mode dense|lexical)
-./target/release/context-server search --db context.db "how do we handle backports"
-
-# MCP stdio server
-./target/release/context-server serve --db context.db
+# or: --instructions 'Use semantic_search for questions about …'
 ```
 
-`index --instructions` / `--instructions-file` writes `meta.instructions`.
-`serve` exposes that text as MCP `ServerInfo.instructions` so clients know when
-to call this corpus (falls back to a generic blurb if unset).
+That text is stored in the DB and exposed as MCP `ServerInfo.instructions` when you `serve`.
 
-Re-index when content changes, then restart the MCP session so `serve` reloads the DB into memory.
-
-#### Claude Code
+### Claude Code
 
 ```bash
 claude mcp add --transport stdio --scope user context-server \
@@ -103,12 +39,11 @@ claude mcp add --transport stdio --scope user context-server \
   serve --db /absolute/path/to/context.db
 ```
 
-`--refresh` + `@latest` rechecks PyPI on each start so you pick up new releases.
-If Claude rarely calls the tools (tool search defers MCP tools), add `"alwaysLoad": true` to the server entry in your Claude MCP config so these tools stay visible every turn.
+`--refresh` + `@latest` rechecks PyPI on each start. If Claude rarely surfaces the tools, set `"alwaysLoad": true` on the server entry in your Claude MCP config.
 
-#### Cursor
+### Cursor
 
-Add to `~/.cursor/mcp.json` (or your project `.cursor/mcp.json`):
+`~/.cursor/mcp.json` (or project `.cursor/mcp.json`):
 
 ```json
 {
@@ -127,56 +62,103 @@ Add to `~/.cursor/mcp.json` (or your project `.cursor/mcp.json`):
 }
 ```
 
-Or point `command` at a local binary and put `serve` / `--db` / the path in `args`. Restart Cursor (or reload MCP) after editing.
+Reload MCP after editing. Re-index when content changes, then restart the MCP session so `serve` reloads the DB.
 
-### Remote database (GCS)
+## What it indexes
 
-`serve` and `search` also accept a `gs://` URI. The object is downloaded into the
-local cache (`$XDG_CACHE_HOME/context-server/dbs/...`, or `~/.cache/...`) before
-opening. `index` still writes a local path only.
+Only `.md` / `.markdown`. Chunks on `#` / `##` / `###`, keeps the heading path on each chunk, and splits long sections with overlap.
+
+Convert structured sources (YAML, etc.) to prose **before** indexing. Fenced YAML searches poorly; a short paragraph that keeps names, roles, and relationships together works much better.
+
+Try the sample set:
 
 ```bash
-# Short form (globally unique bucket)
-context-server serve --db 'gs://my-context-bucket/latest/context.db'
-
-# Project-qualified (still requires gs://; stripped for the Storage API)
-context-server serve --db \
-  'gs://projects/my-gcp-project/buckets/my-context-bucket/objects/latest/context.db'
+cargo build --release
+./target/release/context-server index --input examples/sample-docs --dry-run
+./target/release/context-server index --input examples/sample-docs --db /tmp/sample.db
+./target/release/context-server search --db /tmp/sample.db "password reset"
 ```
 
-Uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials)
-(`gcloud auth application-default login`, or `GOOGLE_APPLICATION_CREDENTIALS`).
-When a sibling `{object}.sha256` exists (sha256sum format), the download is
-skipped if the local cache already matches; otherwise the DB is re-fetched and
-verified.
+## Search
+
+Default mode is **hybrid**: dense cosine (MiniLM) plus BM25, fused with reciprocal rank fusion. Dense catches paraphrase; BM25 catches exact tokens (usernames, acronyms, IDs).
+
+```bash
+context-server search --db context.db --mode hybrid "query"   # default
+context-server search --db context.db --mode dense "query"
+context-server search --db context.db --mode lexical "query"
+```
 
 ## MCP tools
 
-| Tool | Description |
-|------|-------------|
-| `semantic_search` | Ranked passages with similarity scores |
-| `list_documents` | Indexed chunk listing |
-| `answer_question` | Top passage for a question (retrieval only, no generative QA) |
+| Tool | Role |
+|------|------|
+| `semantic_search` | Ranked passages + scores |
+| `list_documents` | Indexed chunks |
+| `answer_question` | Best matching passage(s) — retrieval only, not generative QA |
 
-## Architecture
+## Remote database (GCS)
 
-| Piece | Choice |
-|-------|--------|
-| Embeddings | fastembed → All-MiniLM-L6-v2, L2-normalized (model id stored in DB) |
-| Inference | ort (static ONNX Runtime) |
-| Storage | rusqlite (bundled SQLite), float32 blobs |
-| Search | Hybrid: cosine dense + BM25 → reciprocal rank fusion |
-| Chunking | `##` / `###` + split when text exceeds ~900 chars |
-| MCP | [rmcp](https://github.com/modelcontextprotocol/rust-sdk) stdio |
-
-See [PLAN.md](PLAN.md) for design notes and roadmap.
-
-## Development
+`serve` and `search` accept a `gs://` URI. The object is cached under `$XDG_CACHE_HOME/context-server/dbs/` (or `~/.cache/...`). `index` still writes a local path only.
 
 ```bash
-cargo test
-cargo build --release
+context-server serve --db 'gs://my-bucket/latest/context.db'
+
+# Project-qualified form also works (gs:// required; stripped for the Storage API)
+context-server serve --db \
+  'gs://projects/my-gcp-project/buckets/my-bucket/objects/latest/context.db'
 ```
+
+Uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials). If a sibling `{object}.sha256` exists (sha256sum format), a matching local cache is reused; otherwise the DB is re-fetched and verified.
+
+## CLI
+
+```text
+context-server index  --input <path> [--db FILE] [--dry-run] [--batch N]
+                      [--instructions TEXT | --instructions-file FILE]
+context-server serve  --db <local path | gs://…>
+context-server search --db <local path | gs://…> [--limit N] [--mode hybrid|dense|lexical] <query>
+context-server embed  <text>          # smoke-test embeddings
+```
+
+## Build from source
+
+```bash
+cargo build --release
+cargo test
+```
+
+Rust 1.75+, Linux x86_64 is the primary target. You need a C++ stdlib for the linker (`libstdc++`) and whatever OpenSSL/`native-tls` needs on your platform.
+
+On Fedora/RHEL, if the linker wants `-lstdc++` but only `libstdc++.so.6` exists:
+
+```bash
+mkdir -p .linker && ln -sfn /usr/lib64/libstdc++.so.6 .linker/libstdc++.so
+export RUSTFLAGS="-L native=$(pwd)/.linker"
+```
+
+Linux wheels (same image CI uses — Ubuntu 24.04 / glibc 2.39):
+
+```bash
+./scripts/build-wheel.sh
+VERSION=2026.716.1 ./scripts/build-wheel.sh   # optional override
+```
+
+## Releasing
+
+CalVer `YYYY.MMDD.N` (e.g. `2026.716.1`) so versions work for both Cargo and PyPI. `pyproject.toml` reads the version from `Cargo.toml`; release CI rewrites that from the git tag.
+
+```bash
+tag="$(./scripts/next-calver.sh)"
+git tag -a "$tag" -m "$tag"
+git push origin "$tag"    # Release workflow → PyPI
+```
+
+## Design notes
+
+Under the hood: fastembed All-MiniLM-L6-v2 (384-d, L2-normalized), rusqlite with float32 blobs, [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) over stdio. Each `index` run replaces the DB contents.
+
+More detail and roadmap: [PLAN.md](PLAN.md).
 
 ## License
 
