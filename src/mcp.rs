@@ -165,11 +165,7 @@ impl ContextService {
                     .collect();
                 let mut out = format!("Showing {} document chunks:\n", filtered.len());
                 for d in filtered {
-                    let mut preview = d.text.clone();
-                    if preview.len() > 160 {
-                        preview = format!("{}...", &preview[..157]);
-                    }
-                    preview = preview.replace('\n', " ");
+                    let preview = crate::index::truncate_preview(&d.text, 157);
                     let heading = if d.headings.is_empty() {
                         "(root)".into()
                     } else {

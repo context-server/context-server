@@ -258,11 +258,7 @@ fn run_search(
     let hits = idx.query_filtered(&mut emb, &q, limit, mode, &filter)?;
     println!("query={q:?} mode={mode:?} ({} indexed chunks)", idx.len());
     for (i, h) in hits.iter().enumerate() {
-        let mut preview = h.text.clone();
-        if preview.len() > 240 {
-            preview = format!("{}...", &preview[..237]);
-        }
-        preview = preview.replace('\n', " ");
+        let preview = index::truncate_preview(&h.text, 237);
         println!(
             "\n{}. score={:.4} (dense={:.4} lexical={:.4})  {}#{}\n   {}",
             i + 1,

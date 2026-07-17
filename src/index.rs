@@ -183,12 +183,18 @@ pub fn heading_path(c: &Chunk) -> String {
     }
 }
 
-pub fn format_chunk_debug(c: &Chunk) -> String {
-    let mut preview = c.text.clone();
-    if preview.len() > 120 {
-        preview = format!("{}...", &preview[..117]);
+/// Truncate for display without panicking on multi-byte UTF-8 (emoji, etc.).
+pub fn truncate_preview(text: &str, max_chars: usize) -> String {
+    let mut iter = text.chars();
+    let mut out: String = iter.by_ref().take(max_chars).collect();
+    if iter.next().is_some() {
+        out.push_str("...");
     }
-    preview = preview.replace('\n', " ");
+    out.replace('\n', " ")
+}
+
+pub fn format_chunk_debug(c: &Chunk) -> String {
+    let preview = truncate_preview(&c.text, 117);
     format!("[{}] {} | {}", c.chunk_index, heading_path(c), preview)
 }
 
@@ -307,6 +313,16 @@ Upstream repos use stable branches.
         let chunks = split_markdown("x.md", md);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].headings, ["Title", "Has Content"]);
+    }
+
+    #[test]
+    fn truncate_preview_handles_multibyte_at_cut() {
+        // ✅ is 3 bytes; cutting at a byte index inside it used to panic.
+        let s = format!("{}{}", "a".repeat(155), "✅ more text after emoji");
+        let preview = truncate_preview(&s, 157);
+        assert!(preview.ends_with("..."));
+        assert!(!preview.contains('\u{FFFD}'));
+        assert!(preview.chars().count() <= 160);
     }
 
     #[test]
