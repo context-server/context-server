@@ -8,11 +8,13 @@ use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct Document {
+    #[allow(dead_code)]
     pub id: i64,
     pub source_path: String,
     pub chunk_index: usize,
     pub text: String,
     pub headings: Vec<String>,
+    #[allow(dead_code)]
     pub metadata: serde_json::Map<String, serde_json::Value>,
     pub vector: Vec<f32>,
 }
@@ -54,17 +56,15 @@ CREATE TABLE IF NOT EXISTS meta (
         Ok(Self { conn })
     }
 
+    #[allow(dead_code)]
     pub fn clear(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "DELETE FROM embeddings; DELETE FROM documents; DELETE FROM meta;",
-        )?;
+        self.conn
+            .execute_batch("DELETE FROM embeddings; DELETE FROM documents; DELETE FROM meta;")?;
         Ok(())
     }
 
     pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT value FROM meta WHERE key = ?1")?;
+        let mut stmt = self.conn.prepare("SELECT value FROM meta WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         match rows.next()? {
             Some(row) => Ok(Some(row.get(0)?)),
@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS meta (
         }
     }
 
+    #[allow(dead_code)] // used by unit tests
     pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES (?1, ?2)
@@ -155,11 +156,9 @@ CREATE TABLE IF NOT EXISTS meta (
     pub fn ensure_model_compatible(&self) -> Result<()> {
         let model: Option<String> = self
             .conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'model_id'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT value FROM meta WHERE key = 'model_id'", [], |r| {
+                r.get(0)
+            })
             .ok();
         let dim: Option<String> = self
             .conn
@@ -189,7 +188,10 @@ CREATE TABLE IF NOT EXISTS meta (
                 }
                 let d: usize = d.parse().context("parse meta.dim")?;
                 if d != embed::DIM {
-                    bail!("database dim {d} != {MODEL_ID} dim {}; re-run index", embed::DIM);
+                    bail!(
+                        "database dim {d} != {MODEL_ID} dim {}; re-run index",
+                        embed::DIM
+                    );
                 }
                 Ok(())
             }
@@ -353,7 +355,8 @@ mod tests {
             metadata: serde_json::Map::new(),
         }];
         let vectors = vec![vec![1.0f32; embed::DIM]];
-        db.replace_all(&chunks, &vectors, Some("use for org docs")).unwrap();
+        db.replace_all(&chunks, &vectors, Some("use for org docs"))
+            .unwrap();
         assert_eq!(
             db.get_meta("instructions").unwrap().as_deref(),
             Some("use for org docs")

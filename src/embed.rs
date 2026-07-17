@@ -34,10 +34,7 @@ impl Embedder {
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        let mut out = self
-            .model
-            .embed(texts.to_vec(), None)
-            .context("embed batch")?;
+        let mut out = self.model.embed(texts, None).context("embed batch")?;
         for v in &mut out {
             l2_normalize(v);
         }

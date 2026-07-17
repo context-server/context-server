@@ -91,13 +91,12 @@ impl Index {
             SearchMode::Lexical => {
                 rank_by_scores(&self.docs, &lexical_scores, &dense_scores, limit)
             }
-            SearchMode::Hybrid => {
-                hybrid_rrf(&self.docs, &dense_scores, &lexical_scores, limit)
-            }
+            SearchMode::Hybrid => hybrid_rrf(&self.docs, &dense_scores, &lexical_scores, limit),
         };
         Ok(hits)
     }
 
+    #[allow(dead_code)] // used by unit tests; kept for dense-only callers
     pub fn query_vector(&self, qv: &[f32], limit: usize) -> Vec<ResultHit> {
         let dense: Vec<f32> = self
             .docs
@@ -119,12 +118,7 @@ fn top_ids(scores: &[f32], pool: usize) -> Vec<usize> {
         .collect()
 }
 
-fn hybrid_rrf(
-    docs: &[Document],
-    dense: &[f32],
-    lexical: &[f32],
-    limit: usize,
-) -> Vec<ResultHit> {
+fn hybrid_rrf(docs: &[Document], dense: &[f32], lexical: &[f32], limit: usize) -> Vec<ResultHit> {
     let pool = CANDIDATE_POOL.max(limit);
     let dense_rank = top_ids(dense, pool);
     let lex_rank = top_ids(lexical, pool);
@@ -235,6 +229,6 @@ mod tests {
         let dense = vec![0.95f32, 0.10]; // favors doc 0
         let lexical = idx.bm25.scores("jsmith");
         let hits = hybrid_rrf(&idx.docs, &dense, &lexical, 2);
-        assert_eq!(hits[0].text.contains("jsmith"), true, "{hits:?}");
+        assert!(hits[0].text.contains("jsmith"), "{hits:?}");
     }
 }

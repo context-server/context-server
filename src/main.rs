@@ -12,7 +12,10 @@ use search::SearchMode;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "context-server", about = "Semantic search MCP server for markdown knowledge bases")]
+#[command(
+    name = "context-server",
+    about = "Semantic search MCP server for markdown knowledge bases"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -63,9 +66,7 @@ enum Commands {
         query: Vec<String>,
     },
     /// Embed a string (smoke test)
-    Embed {
-        text: Vec<String>,
-    },
+    Embed { text: Vec<String> },
 }
 
 fn main() -> Result<()> {
@@ -218,10 +219,7 @@ fn run_search(db_spec: String, limit: usize, mode: String, query: Vec<String>) -
     }
     let mut emb = embed::Embedder::new()?;
     let hits = idx.query(&mut emb, &q, limit, mode)?;
-    println!(
-        "query={q:?} mode={mode:?} ({} indexed chunks)",
-        idx.len()
-    );
+    println!("query={q:?} mode={mode:?} ({} indexed chunks)", idx.len());
     for (i, h) in hits.iter().enumerate() {
         let mut preview = h.text.clone();
         if preview.len() > 240 {

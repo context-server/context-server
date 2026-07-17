@@ -95,14 +95,8 @@ fn parse_gs_url(rest: &str) -> Result<GcsRef> {
 fn parse_resource_name(name: &str) -> Result<GcsRef> {
     // projects/{project}/buckets/{bucket}/objects/{object...}
     let parts: Vec<&str> = name.splitn(6, '/').collect();
-    if parts.len() < 6
-        || parts[0] != "projects"
-        || parts[2] != "buckets"
-        || parts[4] != "objects"
-    {
-        bail!(
-            "expected projects/PROJECT/buckets/BUCKET/objects/OBJECT..., got {name:?}"
-        );
+    if parts.len() < 6 || parts[0] != "projects" || parts[2] != "buckets" || parts[4] != "objects" {
+        bail!("expected projects/PROJECT/buckets/BUCKET/objects/OBJECT..., got {name:?}");
     }
     let project = parts[1];
     let bucket = parts[3];
@@ -268,8 +262,7 @@ async fn fetch_gcs_db(gcs: &GcsRef) -> Result<PathBuf> {
         .await
         .with_context(|| format!("read GCS object {bucket}/{}", gcs.object))?;
 
-    let mut file =
-        fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+    let mut file = fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
     let mut hasher = Sha256::new();
     let mut total = 0usize;
     while let Some(chunk) = resp.next().await {
@@ -348,8 +341,7 @@ mod tests {
 
     #[test]
     fn bare_resource_name_is_local_path() {
-        let path =
-            "projects/my-gcp-project/buckets/my-context-bucket/objects/latest/context.db";
+        let path = "projects/my-gcp-project/buckets/my-context-bucket/objects/latest/context.db";
         assert_eq!(
             parse_db_spec(path).unwrap(),
             DbSpec::Local(PathBuf::from(path))
@@ -377,8 +369,7 @@ mod tests {
 
     #[test]
     fn parse_gs_underscore_project() {
-        let s =
-            parse_db_spec("gs://projects/_/buckets/my-bucket/objects/obj.db").unwrap();
+        let s = parse_db_spec("gs://projects/_/buckets/my-bucket/objects/obj.db").unwrap();
         assert_eq!(
             s,
             DbSpec::Gcs(GcsRef {
@@ -417,10 +408,8 @@ mod tests {
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(
-            parse_sha256_text(
-                "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
-            )
-            .unwrap(),
+            parse_sha256_text("E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855")
+                .unwrap(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert!(parse_sha256_text("not-a-hash").is_err());
