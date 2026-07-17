@@ -1,18 +1,47 @@
 name: Release
 
+# Cut a release from the Actions UI (or `gh workflow run release.yml`).
+# Version is CalVer YYYY.MMDD.N via scripts/next-calver.sh; a matching git tag
+# is created after a successful PyPI publish so the next run increments N.
 on:
-  push:
-    tags:
-      # CalVer: YYYY.MMDD.N (e.g. 2026.716.1)
-      - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve next CalVer
+        id: ver
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+          VERSION="$(./scripts/next-calver.sh)"
+          VERSION="${VERSION#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: invalid version from next-calver.sh: $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using VERSION=$VERSION"
+
   linux:
     name: Linux wheel (${{ matrix.arch }})
+    needs: [prepare]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,21 +53,6 @@ jobs:
             arch: aarch64
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Resolve version
-        id: ver
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME}"
-          else
-            VERSION="$(./scripts/next-calver.sh)"
-          fi
-          VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Using VERSION=$VERSION"
 
       # Same Containerfile as local `./scripts/build-wheel.sh` (podman/docker).
       # Ubuntu 24.04 base is required: ort prebuilts need glibc >= ~2.38.
@@ -46,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           docker build \
-            --build-arg "VERSION=${{ steps.ver.outputs.version }}" \
+            --build-arg "VERSION=${{ needs.prepare.outputs.version }}" \
             -t context-server-wheel \
             -f Containerfile .
           cid="$(docker create context-server-wheel)"
@@ -62,25 +76,16 @@ jobs:
 
   macos:
     name: macOS wheel (aarch64)
+    needs: [prepare]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Resolve version
-        id: ver
+      - name: Set version
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME}"
-          else
-            VERSION="$(./scripts/next-calver.sh)"
-          fi
-          VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           chmod +x scripts/*.sh
-          ./scripts/set-version.sh "$VERSION"
+          ./scripts/set-version.sh "${{ needs.prepare.outputs.version }}"
 
       # ort does not ship prebuilt ONNX Runtime for x86_64-apple-darwin.
       - uses: PyO3/maturin-action@v1
@@ -96,16 +101,19 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: [linux, macos]
+    needs: [prepare, linux, macos]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     environment:
       name: release
       url: https://pypi.org/project/context-server/
     permissions:
       id-token: write
-      contents: read
+      contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: astral-sh/setup-uv@v6
 
       - uses: actions/download-artifact@v4
@@ -119,6 +127,22 @@ jobs:
 
       # Trusted Publishing (OIDC). Configure at:
       # https://pypi.org/manage/project/context-server/settings/publishing/
-      # Owner: shanemcd, Repo: context-server, Workflow: release.yml, Environment: release
+      # Owner: context-server, Repo: context-server, Workflow: release.yml, Environment: release
       - name: Publish to PyPI
         run: uv publish --trusted-publishing always -v wheels/*
+
+      - name: Tag release
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+          if git rev-parse "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "tag ${VERSION} already exists; leaving as-is"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${VERSION}" -m "${VERSION}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${VERSION}"
+          echo "Created tag ${VERSION} at ${GITHUB_SHA}"
