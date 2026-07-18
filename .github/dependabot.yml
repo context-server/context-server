@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    # One PR for routine bumps; Dependabot still opens separate PRs for
+    # security updates when needed.
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
