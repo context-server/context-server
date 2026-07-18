@@ -1,8 +1,18 @@
-# context-server
+<p align="center">
+  <img src="assets/logo.png" alt="context-server" width="144">
+</p>
 
-[![CI](https://github.com/context-server/context-server/actions/workflows/ci.yml/badge.svg)](https://github.com/context-server/context-server/actions/workflows/ci.yml)
+<h1 align="center">context-server</h1>
 
-Semantic search over a folder of markdown, served as an [MCP](https://modelcontextprotocol.io/) server for coding agents.
+<p align="center">
+  <a href="https://github.com/context-server/context-server/actions/workflows/ci.yml"><img src="https://github.com/context-server/context-server/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/context-server/"><img src="https://img.shields.io/pypi/v/context-server" alt="PyPI"></a>
+</p>
+
+<p align="center">
+  Semantic search over a folder of markdown, served as an
+  <a href="https://modelcontextprotocol.io/">MCP</a> server for coding agents.
+</p>
 
 Index once into a SQLite DB (embeddings + BM25). Point Claude Code, Cursor, or any MCP client at `serve`, and the agent can search that corpus instead of guessing from memory.
 
