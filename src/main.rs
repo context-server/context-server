@@ -85,7 +85,7 @@ enum Commands {
         #[arg(long)]
         chunk: Option<usize>,
     },
-    /// Embed a string (smoke test)
+    /// Embed a search query (smoke test; applies BGE query instruction)
     Embed { text: Vec<String> },
 }
 
@@ -315,11 +315,12 @@ fn print_chunk(d: &store::Document) {
 fn run_embed(text: Vec<String>) -> Result<()> {
     let t = text.join(" ").trim().to_string();
     if t.is_empty() {
-        bail!("usage: context-server embed <text>");
+        bail!("usage: context-server embed <query>");
     }
     let mut emb = embed::Embedder::new().context("init embedder")?;
+    // Query-style embedding (same path as search); passages use embed_batch.
     let vec = emb.embed(&t)?;
-    print!("dim={} text={t:?}\nfirst8=[", vec.len());
+    print!("dim={} query={t:?}\nfirst8=[", vec.len());
     for (i, v) in vec.iter().take(8).enumerate() {
         if i > 0 {
             print!(", ");

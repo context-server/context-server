@@ -7,7 +7,7 @@ A single-binary MCP server that indexes organizational markdown into a local vec
 ## Why Rust
 
 - [`ort`](https://github.com/pykeio/ort) can statically link ONNX Runtime (no separate `.so` for end users)
-- [`fastembed`](https://github.com/Anush008/fastembed-rs) provides All-MiniLM-L6-v2 + tokenizers
+- [`fastembed`](https://github.com/Anush008/fastembed-rs) provides BGE-small-en-v1.5 + tokenizers
 - Official [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) MCP SDK
 
 ## CLI
@@ -16,14 +16,14 @@ A single-binary MCP server that indexes organizational markdown into a local vec
 context-server index --input <dir> --db context.db
 context-server serve --db context.db
 context-server search --db context.db [--mode hybrid|dense|lexical] "<query>"
-context-server embed "<text>"
+context-server embed "<query>"   # query-style (BGE instruction)
 ```
 
 ## Modules (`src/`)
 
 | Module | Role |
 |--------|------|
-| `embed` | fastembed AllMiniLML6V2 (384-dim, L2-normalized); `MODEL_ID` constant |
+| `embed` | fastembed BGESmallENV15 (384-dim, L2-normalized); query instruction on search; `MODEL_ID` constant |
 | `index` | Markdown heading chunker (`##` / `###`), oversized split + overlap |
 | `store` | SQLite: documents + embeddings + `meta` (model_id, dim) |
 | `bm25` | In-memory BM25 + reciprocal rank fusion |
@@ -43,7 +43,7 @@ context-server embed "<text>"
 
 1. Split on `#` / `##` / `###`
 2. Prefix each chunk with `Title > H2 > H3`
-3. If embedded text exceeds ~900 chars, split the body with ~150-char overlap (MiniLM truncates ~256 tokens)
+3. If embedded text exceeds ~1800 chars, split the body with ~200-char overlap (BGE truncates ~512 tokens)
 
 ## Search
 

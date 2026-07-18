@@ -6,11 +6,11 @@ use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
-/// Soft cap on embedded text length. MiniLM truncates around ~256 tokens;
+/// Soft cap on embedded text length. BGE-small truncates around ~512 tokens;
 /// ~4 chars/token ⇒ keep chunks under this so the tail is not dropped.
-pub const MAX_CHUNK_CHARS: usize = 900;
+pub const MAX_CHUNK_CHARS: usize = 1800;
 /// Overlap between consecutive splits of an oversized section.
-pub const CHUNK_OVERLAP_CHARS: usize = 150;
+pub const CHUNK_OVERLAP_CHARS: usize = 200;
 
 #[derive(Debug, Clone)]
 pub struct Chunk {

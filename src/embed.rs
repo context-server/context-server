@@ -1,12 +1,16 @@
-//! Sentence embeddings via fastembed (ONNX Runtime, All-MiniLM-L6-v2).
+//! Sentence embeddings via fastembed (ONNX Runtime, BGE-small-en-v1.5).
 
 use anyhow::{Context, Result};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use std::path::PathBuf;
 
 /// Stored in the DB so we refuse to search against an incompatible index.
-pub const MODEL_ID: &str = "AllMiniLML6V2";
+pub const MODEL_ID: &str = "BGESmallENV15";
 pub const DIM: usize = 384;
+
+/// BGE retrieval instruction: prefix queries only; passages are embedded as-is.
+/// See https://huggingface.co/BAAI/bge-small-en-v1.5
+const QUERY_INSTRUCTION: &str = "Represent this sentence for searching relevant passages: ";
 
 pub struct Embedder {
     model: TextEmbedding,
@@ -18,24 +22,24 @@ impl Embedder {
         std::fs::create_dir_all(&cache_dir)
             .with_context(|| format!("create model cache dir {}", cache_dir.display()))?;
         let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+            InitOptions::new(EmbeddingModel::BGESmallENV15)
                 .with_cache_dir(cache_dir)
                 .with_show_download_progress(true),
         )
-        .context("load embedding model (AllMiniLML6V2)")?;
+        .context("load embedding model (BGESmallENV15)")?;
         Ok(Self { model })
     }
 
+    /// Embed a search query (applies the BGE query instruction).
     pub fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
-        let mut out = self
-            .model
-            .embed(vec![text.to_string()], None)
-            .context("embed")?;
+        let instructed = format!("{QUERY_INSTRUCTION}{text}");
+        let mut out = self.model.embed(vec![instructed], None).context("embed")?;
         let mut v = out.pop().context("empty embedding")?;
         l2_normalize(&mut v);
         Ok(v)
     }
 
+    /// Embed document passages (no query instruction).
     pub fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(vec![]);

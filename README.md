@@ -31,7 +31,7 @@ context-server serve --db context.db
 
 Wheels: Linux x86_64/aarch64 (`manylinux_2_39` / glibc 2.39+, e.g. Ubuntu 24.04+) and macOS Apple Silicon.
 
-The first embedding run downloads All-MiniLM-L6-v2 into
+The first embedding run downloads BGE-small-en-v1.5 into
 `$XDG_CACHE_HOME/context-server/fastembed/` (or `~/.cache/...`; once, tens of MB).
 Override with `FASTEMBED_CACHE_DIR` or `HF_HOME`.
 
@@ -95,7 +95,7 @@ cargo build --release
 
 ## Search
 
-Default mode is **hybrid**: dense cosine (MiniLM) plus BM25, fused with reciprocal rank fusion. Dense catches paraphrase; BM25 catches exact tokens (usernames, acronyms, IDs).
+Default mode is **hybrid**: dense cosine (BGE-small-en-v1.5) plus BM25, fused with reciprocal rank fusion. Dense catches paraphrase; BM25 catches exact tokens (usernames, acronyms, IDs).
 
 ```bash
 context-server search --db context.db --mode hybrid "query"   # default
@@ -142,7 +142,7 @@ context-server serve  --db <local path | gs://…>
 context-server search --db <local path | gs://…> [--limit N] [--mode hybrid|dense|lexical]
                       [--path-prefix P] [--heading H] [--tag T] <query>
 context-server get    --db <local path | gs://…> --path FILE [--chunk N]
-context-server embed  <text>          # smoke-test embeddings
+context-server embed  <query>         # smoke-test query embedding (BGE instruction)
 ```
 
 ## Build from source
@@ -178,7 +178,7 @@ gh workflow run release.yml --repo context-server/context-server
 
 ## Design notes
 
-Under the hood: fastembed All-MiniLM-L6-v2 (384-d, L2-normalized), rusqlite with float32 blobs, [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) over stdio. Each `index` run replaces the DB contents.
+Under the hood: fastembed BGE-small-en-v1.5 (384-d, L2-normalized; query instruction applied at search time), rusqlite with float32 blobs, [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) over stdio. Each `index` run replaces the DB contents. Re-run `index` after upgrading if `MODEL_ID` changed.
 
 More detail and roadmap: [PLAN.md](PLAN.md).
 
