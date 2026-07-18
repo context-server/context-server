@@ -1,5 +1,7 @@
 # context-server
 
+[![CI](https://github.com/context-server/context-server/actions/workflows/ci.yml/badge.svg)](https://github.com/context-server/context-server/actions/workflows/ci.yml)
+
 Semantic search over a folder of markdown, served as an [MCP](https://modelcontextprotocol.io/) server for coding agents.
 
 Index once into a SQLite DB (embeddings + BM25). Point Claude Code, Cursor, or any MCP client at `serve`, and the agent can search that corpus instead of guessing from memory.
