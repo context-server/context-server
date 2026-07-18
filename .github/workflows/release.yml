@@ -55,12 +55,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set version
-        run: |
-          set -euo pipefail
-          chmod +x scripts/*.sh
-          ./scripts/set-version.sh "${{ needs.prepare.outputs.version }}"
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -78,6 +72,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: wheel-linux-${{ matrix.arch }}
+          cache-on-failure: true
+
+      - name: Set version
+        run: |
+          set -euo pipefail
+          chmod +x scripts/*.sh
+          ./scripts/set-version.sh "${{ needs.prepare.outputs.version }}"
 
       # Host maturin + rust-cache (same as CI). Avoid maturin-action here: it
       # injects --compatibility and conflicts with manylinux_2_39.
@@ -109,17 +110,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set version
-        run: |
-          set -euo pipefail
-          chmod +x scripts/*.sh
-          ./scripts/set-version.sh "${{ needs.prepare.outputs.version }}"
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: wheel-macos-aarch64
+          cache-on-failure: true
+
+      - name: Set version
+        run: |
+          set -euo pipefail
+          chmod +x scripts/*.sh
+          ./scripts/set-version.sh "${{ needs.prepare.outputs.version }}"
 
       # ort does not ship prebuilt ONNX Runtime for x86_64-apple-darwin.
       - uses: PyO3/maturin-action@v1

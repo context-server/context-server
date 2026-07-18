@@ -62,17 +62,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve version
-        id: ver
-        run: |
-          set -euo pipefail
-          VERSION="$(./scripts/next-calver.sh)"
-          VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Using VERSION=$VERSION"
-          chmod +x scripts/*.sh
-          ./scripts/set-version.sh "$VERSION"
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -87,9 +76,23 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Restore before set-version so CalVer rewrites of Cargo.toml/lock don't
+      # bust the key. Save even on failure so a long compile isn't wasted.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: wheel-linux-${{ matrix.arch }}
+          cache-on-failure: true
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="$(./scripts/next-calver.sh)"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using VERSION=$VERSION"
+          chmod +x scripts/*.sh
+          ./scripts/set-version.sh "$VERSION"
 
       # Call maturin on the host (not maturin-action): the action injects its own
       # --compatibility and conflicts with manylinux_2_39. glibc 2.39 on
@@ -123,6 +126,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-macos-aarch64
+          cache-on-failure: true
+
       - name: Resolve version
         id: ver
         run: |
@@ -132,12 +142,6 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           chmod +x scripts/*.sh
           ./scripts/set-version.sh "$VERSION"
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: wheel-macos-aarch64
 
       # ort does not ship prebuilt ONNX Runtime for x86_64-apple-darwin.
       - uses: PyO3/maturin-action@v1
