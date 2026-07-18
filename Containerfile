@@ -1,8 +1,11 @@
-# Build Linux wheels for context-server.
+# Build Linux wheels for context-server (local podman/docker helper).
 #
 # ORT's prebuilt static libraries need glibc >= ~2.38 (__isoc23_*,
 # __libc_single_threaded), so classic manylinux_2_28 images cannot link.
-# Ubuntu 24.04 (glibc 2.39) matches that requirement and is what CI uses.
+# Ubuntu 24.04 (glibc 2.39) matches that requirement.
+#
+# GitHub Actions builds wheels natively on ubuntu-24.04 with rust-cache instead
+# of this image (see .github/workflows/ci.yml / release.yml).
 #
 # Local:
 #   ./scripts/build-wheel.sh

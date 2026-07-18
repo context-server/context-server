@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   prepare:
@@ -47,27 +48,46 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             arch: x86_64
           - os: ubuntu-24.04-arm
             arch: aarch64
     steps:
       - uses: actions/checkout@v4
 
-      # Same Containerfile as local `./scripts/build-wheel.sh` (podman/docker).
-      # Ubuntu 24.04 base is required: ort prebuilts need glibc >= ~2.38.
-      - name: Build wheel with Containerfile
+      - name: Set version
         run: |
           set -euo pipefail
-          docker build \
-            --build-arg "VERSION=${{ needs.prepare.outputs.version }}" \
-            -t context-server-wheel \
-            -f Containerfile .
-          cid="$(docker create context-server-wheel)"
-          mkdir -p dist
-          docker cp "$cid:/out/." dist/
-          docker rm "$cid"
-          ls -la dist
+          chmod +x scripts/*.sh
+          ./scripts/set-version.sh "${{ needs.prepare.outputs.version }}"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            libssl-dev \
+            patchelf \
+            pkg-config \
+            python3 \
+            python3-pip
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-linux-${{ matrix.arch }}
+
+      # Native Ubuntu 24.04 + rust-cache (same as CI). Containerfile stays for local builds.
+      - uses: PyO3/maturin-action@v1
+        with:
+          args: --release --locked --compatibility manylinux_2_39 --out dist
+          manylinux: 'off'
+
+      - name: Build sdist
+        if: matrix.arch == 'x86_64'
+        run: maturin sdist -o dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -86,6 +106,12 @@ jobs:
           set -euo pipefail
           chmod +x scripts/*.sh
           ./scripts/set-version.sh "${{ needs.prepare.outputs.version }}"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-macos-aarch64
 
       # ort does not ship prebuilt ONNX Runtime for x86_64-apple-darwin.
       - uses: PyO3/maturin-action@v1
