@@ -33,10 +33,7 @@ impl Embedder {
     /// Embed a search query (applies the BGE query instruction).
     pub fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
         let instructed = format!("{QUERY_INSTRUCTION}{text}");
-        let mut out = self
-            .model
-            .embed(vec![instructed], None)
-            .context("embed")?;
+        let mut out = self.model.embed(vec![instructed], None).context("embed")?;
         let mut v = out.pop().context("empty embedding")?;
         l2_normalize(&mut v);
         Ok(v)

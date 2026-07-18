@@ -142,7 +142,7 @@ context-server serve  --db <local path | gs://…>
 context-server search --db <local path | gs://…> [--limit N] [--mode hybrid|dense|lexical]
                       [--path-prefix P] [--heading H] [--tag T] <query>
 context-server get    --db <local path | gs://…> --path FILE [--chunk N]
-context-server embed  <text>          # smoke-test embeddings
+context-server embed  <query>         # smoke-test query embedding (BGE instruction)
 ```
 
 ## Build from source

@@ -16,7 +16,7 @@ A single-binary MCP server that indexes organizational markdown into a local vec
 context-server index --input <dir> --db context.db
 context-server serve --db context.db
 context-server search --db context.db [--mode hybrid|dense|lexical] "<query>"
-context-server embed "<text>"
+context-server embed "<query>"   # query-style (BGE instruction)
 ```
 
 ## Modules (`src/`)
