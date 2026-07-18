@@ -1,8 +1,8 @@
 name: Release
 
 # Cut a release from the Actions UI (or `gh workflow run release.yml`).
-# Version is CalVer YYYY.MMDD.N via scripts/next-calver.sh; a matching git tag
-# is created after a successful PyPI publish so the next run increments N.
+# Version is CalVer YYYY.MMDD.N via scripts/next-calver.sh. After PyPI publish:
+# create the matching git tag (so the next run increments N) and a GitHub Release.
 on:
   workflow_dispatch:
 
@@ -167,18 +167,30 @@ jobs:
       - name: Publish to PyPI
         run: uv publish --trusted-publishing always -v wheels/*
 
-      - name: Tag release
+      - name: Tag and GitHub release
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git fetch --tags --force origin
-          if git rev-parse "refs/tags/${VERSION}" >/dev/null 2>&1; then
-            echo "tag ${VERSION} already exists; leaving as-is"
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${VERSION}" -m "${VERSION}" "${GITHUB_SHA}"
-          git push origin "refs/tags/${VERSION}"
-          echo "Created tag ${VERSION} at ${GITHUB_SHA}"
+
+          if git rev-parse "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "tag ${VERSION} already exists; leaving as-is"
+          else
+            git tag -a "${VERSION}" -m "${VERSION}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${VERSION}"
+            echo "Created tag ${VERSION} at ${GITHUB_SHA}"
+          fi
+
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "GitHub release ${VERSION} already exists; leaving as-is"
+            exit 0
+          fi
+          gh release create "${VERSION}" \
+            --title "${VERSION}" \
+            --generate-notes \
+            --target "${GITHUB_SHA}" \
+            wheels/*

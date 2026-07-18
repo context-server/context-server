@@ -160,7 +160,7 @@ VERSION=2026.716.1 ./scripts/build-wheel.sh   # optional override
 
 ## Releasing
 
-CalVer `YYYY.MMDD.N` (e.g. `2026.716.1`) so versions work for both Cargo and PyPI. Run the **Release** workflow on `main` (Actions UI or CLI); it picks the next version, builds wheels, publishes to PyPI, then creates the matching git tag.
+CalVer `YYYY.MMDD.N` (e.g. `2026.716.1`) so versions work for both Cargo and PyPI. Run the **Release** workflow on `main` (Actions UI or CLI); it picks the next version, builds wheels, publishes to PyPI, then creates the matching git tag and GitHub Release (with wheels attached).
 
 ```bash
 gh workflow run release.yml --repo context-server/context-server
