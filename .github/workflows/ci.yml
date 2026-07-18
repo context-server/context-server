@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,7 +43,9 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-  # Same platforms as release.yml (publish stays tag-only).
+  # Same platforms as release.yml. Native Ubuntu 24.04 builds (not Docker) so
+  # Swatinem/rust-cache can reuse the release target between runs. Containerfile
+  # remains for local podman/docker wheel builds.
   linux:
     name: Linux wheel (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
@@ -50,7 +53,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             arch: x86_64
           - os: ubuntu-24.04-arm
             arch: aarch64
@@ -67,20 +70,45 @@ jobs:
           VERSION="${VERSION#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Using VERSION=$VERSION"
+          chmod +x scripts/*.sh
+          ./scripts/set-version.sh "$VERSION"
 
-      # Ubuntu 24.04 Containerfile: ort prebuilts need glibc >= ~2.38.
-      - name: Build wheel with Containerfile
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            libssl-dev \
+            patchelf \
+            pkg-config \
+            python3 \
+            python3-pip
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-linux-${{ matrix.arch }}
+
+      # Call maturin on the host (not maturin-action): the action injects its own
+      # --compatibility and conflicts with manylinux_2_39. glibc 2.39 on
+      # ubuntu-24.04 matches the Containerfile / PyPI tag.
+      - name: Install maturin
+        run: sudo python3 -m pip install --break-system-packages 'maturin[patchelf]>=1.0,<2.0'
+
+      - name: Build wheel
+        env:
+          OPENSSL_NO_VENDOR: '1'
         run: |
           set -euo pipefail
-          docker build \
-            --build-arg "VERSION=${{ steps.ver.outputs.version }}" \
-            -t context-server-wheel \
-            -f Containerfile .
-          cid="$(docker create context-server-wheel)"
           mkdir -p dist
-          docker cp "$cid:/out/." dist/
-          docker rm "$cid"
+          maturin build --release --locked --compatibility manylinux_2_39 -o dist
           ls -la dist
+
+      - name: Build sdist
+        if: matrix.arch == 'x86_64'
+        run: maturin sdist -o dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -104,6 +132,12 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           chmod +x scripts/*.sh
           ./scripts/set-version.sh "$VERSION"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wheel-macos-aarch64
 
       # ort does not ship prebuilt ONNX Runtime for x86_64-apple-darwin.
       - uses: PyO3/maturin-action@v1
