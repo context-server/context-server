@@ -8,10 +8,17 @@ use anyhow::{Context, Result};
 const RRF_K: f32 = 60.0;
 /// How many candidates to take from each ranker before fusion.
 const CANDIDATE_POOL: usize = 50;
+const MIN_DENSE_SCORE: f32 = 0.30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
     Hybrid,
+    Dense,
+    Lexical,
+}
+
+#[derive(Clone, Copy)]
+enum ScoreKind {
     Dense,
     Lexical,
 }
@@ -35,6 +42,7 @@ pub struct ResultHit {
     pub source_path: String,
     pub chunk_index: usize,
     pub headings: Vec<String>,
+    pub metadata: serde_json::Map<String, serde_json::Value>,
     pub text: String,
 }
 
@@ -138,6 +146,16 @@ impl Index {
             .find(|d| d.source_path == source_path && d.chunk_index == chunk_index)
     }
 
+    pub fn get_by_chunk_id(&self, chunk_id: &str) -> Option<&Document> {
+        self.docs.iter().find(|document| {
+            document
+                .metadata
+                .get("_chunk_id")
+                .and_then(|value| value.as_str())
+                == Some(chunk_id)
+        })
+    }
+
     /// All chunks for a source path, ordered by `chunk_index`.
     pub fn get_by_path(&self, source_path: &str) -> Vec<&Document> {
         let mut docs: Vec<&Document> = self
@@ -211,10 +229,20 @@ impl Index {
         }
 
         let hits = match mode {
-            SearchMode::Dense => rank_by_scores(&self.docs, &dense_scores, &lexical_scores, limit),
-            SearchMode::Lexical => {
-                rank_by_scores(&self.docs, &lexical_scores, &dense_scores, limit)
-            }
+            SearchMode::Dense => rank_by_scores(
+                &self.docs,
+                &dense_scores,
+                &lexical_scores,
+                limit,
+                ScoreKind::Dense,
+            ),
+            SearchMode::Lexical => rank_by_scores(
+                &self.docs,
+                &lexical_scores,
+                &dense_scores,
+                limit,
+                ScoreKind::Lexical,
+            ),
             SearchMode::Hybrid => hybrid_rrf(&self.docs, &dense_scores, &lexical_scores, limit),
         };
         // Drop zero-score hits that slipped through when everything was filtered out of ranking ties
@@ -239,7 +267,7 @@ impl Index {
             .map(|d| embed::cosine(qv, &d.vector))
             .collect();
         let lexical = vec![0.0; self.docs.len()];
-        rank_by_scores(&self.docs, &dense, &lexical, limit)
+        rank_by_scores(&self.docs, &dense, &lexical, limit, ScoreKind::Dense)
     }
 }
 
@@ -265,8 +293,19 @@ fn hybrid_rrf(docs: &[Document], dense: &[f32], lexical: &[f32], limit: usize) -
     } else {
         reciprocal_rank_fusion(&[dense_rank, lex_rank], RRF_K)
     };
+    let mut per_source = std::collections::HashMap::<&str, usize>::new();
     fused
         .into_iter()
+        .filter(|(i, _)| lexical[*i] > 0.0 || dense[*i] >= MIN_DENSE_SCORE)
+        .filter(|(i, _)| {
+            let count = per_source.entry(docs[*i].source_path.as_str()).or_default();
+            if *count >= 2 {
+                false
+            } else {
+                *count += 1;
+                true
+            }
+        })
         .take(limit)
         .map(|(i, score)| hit_from(docs, i, score, dense[i], lexical[i]))
         .collect()
@@ -277,16 +316,22 @@ fn rank_by_scores(
     primary: &[f32],
     secondary: &[f32],
     limit: usize,
+    kind: ScoreKind,
 ) -> Vec<ResultHit> {
     let mut idxs: Vec<usize> = (0..docs.len()).filter(|&i| primary[i] > 0.0).collect();
     idxs.sort_by(|a, b| {
         primary[*b]
             .partial_cmp(&primary[*a])
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| docs[*a].source_path.cmp(&docs[*b].source_path))
+            .then_with(|| docs[*a].chunk_index.cmp(&docs[*b].chunk_index))
     });
     idxs.truncate(limit.min(docs.len()));
     idxs.into_iter()
-        .map(|i| hit_from(docs, i, primary[i], primary[i], secondary[i]))
+        .map(|i| match kind {
+            ScoreKind::Dense => hit_from(docs, i, primary[i], primary[i], secondary[i]),
+            ScoreKind::Lexical => hit_from(docs, i, primary[i], secondary[i], primary[i]),
+        })
         .collect()
 }
 
@@ -305,6 +350,7 @@ fn hit_from(
         source_path: d.source_path.clone(),
         chunk_index: d.chunk_index,
         headings: d.headings.clone(),
+        metadata: d.metadata.clone(),
         text: d.text.clone(),
     }
 }
@@ -396,6 +442,27 @@ mod tests {
             metadata,
             vector,
         }
+    }
+
+    #[test]
+    fn lexical_result_reports_lexical_not_dense_score() {
+        let docs = vec![doc(1, "exact identifier", vec![1.0, 0.0])];
+        let dense = vec![0.0];
+        let lexical = vec![4.2];
+        let hits = rank_by_scores(&docs, &lexical, &dense, 1, ScoreKind::Lexical);
+        assert_eq!(hits[0].dense_score, 0.0);
+        assert_eq!(hits[0].lexical_score, 4.2);
+    }
+
+    #[test]
+    fn equal_scores_use_stable_citation_order() {
+        let docs = vec![
+            doc_at(2, "z.md", 0, "same", &[], &[], vec![1.0]),
+            doc_at(1, "a.md", 0, "same", &[], &[], vec![1.0]),
+        ];
+        let hits = rank_by_scores(&docs, &[1.0, 1.0], &[0.0, 0.0], 2, ScoreKind::Dense);
+        assert_eq!(hits[0].source_path, "a.md");
+        assert_eq!(hits[1].source_path, "z.md");
     }
 
     #[test]
@@ -546,7 +613,7 @@ mod tests {
         ];
         let primary = vec![0.8, 0.0];
         let secondary = vec![0.0, 0.0];
-        let ranked = rank_by_scores(&docs, &primary, &secondary, 5);
+        let ranked = rank_by_scores(&docs, &primary, &secondary, 5, ScoreKind::Dense);
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].source_path, "1.md");
     }
