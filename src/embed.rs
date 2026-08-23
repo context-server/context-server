@@ -11,6 +11,9 @@ pub const DIM: usize = 384;
 /// BGE retrieval instruction: prefix queries only; passages are embedded as-is.
 /// See https://huggingface.co/BAAI/bge-small-en-v1.5
 const QUERY_INSTRUCTION: &str = "Represent this sentence for searching relevant passages: ";
+/// Persisted provenance for every behavior that affects vector compatibility.
+pub const EMBEDDING_FINGERPRINT: &str =
+    "v1|fastembed:BGESmallENV15|dim:384|pool:model-default|l2:true|query:bge-v1.5";
 
 pub struct Embedder {
     model: TextEmbedding,
@@ -54,7 +57,7 @@ impl Embedder {
 
 /// Prefer explicit env overrides, otherwise use the XDG cache (not the process cwd).
 /// fastembed's default is `.fastembed_cache` in PWD, which pollutes project trees.
-fn model_cache_dir() -> Result<PathBuf> {
+pub fn model_cache_dir() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("FASTEMBED_CACHE_DIR") {
         return Ok(PathBuf::from(p));
     }
@@ -65,6 +68,24 @@ fn model_cache_dir() -> Result<PathBuf> {
         .context("no cache directory (set XDG_CACHE_HOME or HOME)")?
         .join("context-server")
         .join("fastembed"))
+}
+
+pub fn model_is_cached() -> Result<bool> {
+    let dir = model_cache_dir()?;
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    Ok(walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .any(|entry| entry.file_type().is_file() && entry.file_name() == "model.onnx"))
+}
+
+pub fn estimated_tokens(text: &str) -> usize {
+    text.split_whitespace()
+        .map(|word| word.chars().count().max(1).div_ceil(4))
+        .sum::<usize>()
+        .max(1)
 }
 
 fn l2_normalize(v: &mut [f32]) {

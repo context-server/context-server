@@ -1,5 +1,6 @@
 mod bm25;
 mod embed;
+mod eval;
 mod index;
 mod mcp;
 mod remote;
@@ -40,9 +41,9 @@ enum Commands {
         /// Re-embed every collected file even if content hashes match
         #[arg(long)]
         full: bool,
-        /// Upsert collected files only; do not delete paths missing from --input
+        /// Delete indexed paths missing from --input; empty input deletes all documents
         #[arg(long)]
-        update: bool,
+        sync: bool,
         /// MCP server instructions stored in DB meta (when to call this corpus)
         #[arg(long)]
         instructions: Option<String>,
@@ -93,6 +94,31 @@ enum Commands {
     },
     /// Embed a search query (smoke test; applies BGE query instruction)
     Embed { text: Vec<String> },
+    /// Evaluate hybrid retrieval against golden citations
+    Eval {
+        #[arg(long, default_value = "context.db")]
+        db: String,
+        #[arg(long, default_value = "eval/cases.json")]
+        cases: PathBuf,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+    },
+    /// Show corpus and index metadata
+    Status {
+        #[arg(long, default_value = "context.db")]
+        db: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate database integrity and model compatibility
+    Validate {
+        #[arg(long, default_value = "context.db")]
+        db: String,
+    },
+    /// Show embedding model cache status
+    ModelStatus,
+    /// Download and initialize the embedding model cache
+    ModelDownload,
 }
 
 fn main() -> Result<()> {
@@ -108,7 +134,7 @@ fn main() -> Result<()> {
             dry_run,
             batch,
             full,
-            update,
+            sync,
             instructions,
             instructions_file,
         } => run_index(IndexRun {
@@ -117,7 +143,7 @@ fn main() -> Result<()> {
             dry_run,
             batch,
             full,
-            update,
+            sync,
             instructions,
             instructions_file,
         }),
@@ -136,6 +162,11 @@ fn main() -> Result<()> {
         } => run_search(db, limit, mode, path_prefix, heading, tag, query),
         Commands::Get { db, path, chunk } => run_get(db, path, chunk),
         Commands::Embed { text } => run_embed(text),
+        Commands::Eval { db, cases, limit } => run_eval(db, cases, limit),
+        Commands::Status { db, json } => run_status(db, json),
+        Commands::Validate { db } => run_validate(db),
+        Commands::ModelStatus => run_model_status(),
+        Commands::ModelDownload => run_model_download(),
     }
 }
 
@@ -145,7 +176,7 @@ struct IndexRun {
     dry_run: bool,
     batch: usize,
     full: bool,
-    update: bool,
+    sync: bool,
     instructions: Option<String>,
     instructions_file: Option<PathBuf>,
 }
@@ -164,15 +195,14 @@ fn run_index(
         dry_run,
         batch,
         full,
-        update,
+        sync,
         instructions,
         instructions_file,
     }: IndexRun,
 ) -> Result<()> {
     let chunks = index::collect(&input)?;
-    if chunks.is_empty() {
-        bail!("no markdown chunks found under {}", input.display());
-    }
+    validate_collected_chunks(chunks.len(), sync)
+        .with_context(|| format!("index input {}", input.display()))?;
     if dry_run {
         println!("chunked {} pieces from {}", chunks.len(), input.display());
         for c in &chunks {
@@ -209,7 +239,9 @@ fn run_index(
         .collect();
 
     let mut db = store::Db::open(&db_path)?;
-    let force_full = full || db.needs_full_reembed()?;
+    let migration_required = db.needs_full_reembed()?;
+    validate_index_mode(sync, migration_required)?;
+    let force_full = full || migration_required;
     let mut existing = db.file_hashes()?;
     for path in db.source_paths()? {
         existing.entry(path).or_default();
@@ -218,7 +250,7 @@ fn run_index(
         .iter()
         .map(|(p, h, _)| (p.clone(), h.clone()))
         .collect();
-    let plan = index::plan_index(&incoming_hashes, &existing, !update, force_full);
+    let plan = index::plan_index(&incoming_hashes, &existing, sync, force_full);
 
     println!(
         "indexing {} files from {} -> {} ({}){}",
@@ -251,8 +283,8 @@ fn run_index(
             plan.prune.join(", ")
         );
     }
-    if update {
-        eprintln!("  --update: not pruning paths missing from input");
+    if !sync {
+        eprintln!("  upsert only; pass --sync to prune paths missing from input");
     }
 
     let embed_set: std::collections::HashSet<&str> =
@@ -309,6 +341,23 @@ fn run_index(
     Ok(())
 }
 
+fn validate_collected_chunks(chunk_count: usize, sync: bool) -> Result<()> {
+    if chunk_count == 0 && !sync {
+        bail!("no markdown chunks found; pass --sync to reconcile an empty corpus");
+    }
+    Ok(())
+}
+
+fn validate_index_mode(sync: bool, migration_required: bool) -> Result<()> {
+    if !sync && migration_required {
+        bail!(
+            "the database requires a full model/chunker migration; \
+             re-index the complete corpus with --sync"
+        );
+    }
+    Ok(())
+}
+
 async fn run_serve(db_spec: String) -> Result<()> {
     use rmcp::ServiceExt;
 
@@ -322,7 +371,7 @@ async fn run_serve(db_spec: String) -> Result<()> {
         .init();
 
     let db_path = remote::resolve_db(&db_spec).await?;
-    let db = store::Db::open(&db_path)?;
+    let db = store::Db::open_read_only(&db_path)?;
     let n = db.count()?;
     if n == 0 {
         bail!(
@@ -367,7 +416,7 @@ fn run_search(
         tag,
     };
     let db_path = remote::resolve_db_blocking(&db_spec)?;
-    let db = store::Db::open(&db_path)?;
+    let db = store::Db::open_read_only(&db_path)?;
     let idx = search::Index::load(&db)?;
     if idx.is_empty() {
         bail!("database {} has no documents", db_path.display());
@@ -393,7 +442,7 @@ fn run_search(
 
 fn run_get(db_spec: String, path: String, chunk: Option<usize>) -> Result<()> {
     let db_path = remote::resolve_db_blocking(&db_spec)?;
-    let db = store::Db::open(&db_path)?;
+    let db = store::Db::open_read_only(&db_path)?;
     let idx = search::Index::load(&db)?;
     match chunk {
         Some(i) => {
@@ -460,4 +509,143 @@ fn run_embed(text: Vec<String>) -> Result<()> {
         embed::cosine(&vecs[0], &vecs[2])
     );
     Ok(())
+}
+
+fn run_eval(db_spec: String, cases_path: PathBuf, limit: usize) -> Result<()> {
+    let db_path = remote::resolve_db_blocking(&db_spec)?;
+    let db = store::Db::open_read_only(&db_path)?;
+    let idx = search::Index::load(&db)?;
+    let cases = eval::load_cases(&cases_path)?;
+    let mut emb = embed::Embedder::new()?;
+    let mut values = Vec::with_capacity(cases.len());
+    for case in &cases {
+        let hits = idx.query(&mut emb, &case.query, limit, SearchMode::Hybrid)?;
+        let ranked: Vec<String> = hits
+            .iter()
+            .map(|hit| format!("{}#{}", hit.source_path, hit.chunk_index))
+            .collect();
+        values.push(eval::score_case(&ranked, &case.relevant, limit));
+    }
+    let metrics = eval::aggregate(&values);
+    println!(
+        "cases={} recall@{}={:.4} mrr={:.4}",
+        metrics.cases, limit, metrics.recall_at_k, metrics.mrr
+    );
+    Ok(())
+}
+
+fn run_status(db_spec: String, json: bool) -> Result<()> {
+    let path = remote::resolve_db_blocking(&db_spec)?;
+    let db = store::Db::open_read_only(&path)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "path": path, "chunks": db.count()?, "files": db.source_paths()?.len(),
+                "model_id": db.get_meta("model_id")?, "chunker_version": db.get_meta("chunker_version")?,
+                "embedding_fingerprint": db.get_meta("embedding_fingerprint")?,
+            })
+        );
+    } else {
+        println!("{}", db.summary()?);
+    }
+    Ok(())
+}
+
+fn run_validate(db_spec: String) -> Result<()> {
+    let path = remote::resolve_db_blocking(&db_spec)?;
+    let db = store::Db::open_read_only(&path)?;
+    db.ensure_model_compatible()?;
+    let result: String = db
+        .conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    if result != "ok" {
+        bail!("SQLite integrity_check failed: {result}");
+    }
+    println!("ok: {}", db.summary()?);
+    Ok(())
+}
+
+fn run_model_status() -> Result<()> {
+    let path = embed::model_cache_dir()?;
+    println!(
+        "model={} cached={} path={}",
+        embed::MODEL_ID,
+        embed::model_is_cached()?,
+        path.display()
+    );
+    Ok(())
+}
+
+fn run_model_download() -> Result<()> {
+    let _ = embed::Embedder::new()?;
+    println!(
+        "model={} ready at {}",
+        embed::MODEL_ID,
+        embed::model_cache_dir()?.display()
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_is_rejected_when_index_migration_is_required() {
+        let err = validate_index_mode(false, true).expect_err("partial migration must fail");
+        assert!(
+            err.to_string().contains("--sync"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn upsert_is_allowed_when_index_is_compatible() {
+        validate_index_mode(false, false).expect("compatible upsert");
+    }
+
+    #[test]
+    fn sync_is_allowed_when_index_migration_is_required() {
+        validate_index_mode(true, true).expect("complete migration");
+    }
+
+    #[test]
+    fn compatible_sync_is_allowed() {
+        validate_index_mode(true, false).expect("compatible sync");
+    }
+
+    #[test]
+    fn index_defaults_to_safe_upsert() {
+        let cli = Cli::try_parse_from(["context-server", "index", "--input", "docs"])
+            .expect("parse index command");
+        let Commands::Index { sync, .. } = cli.command else {
+            panic!("expected index command");
+        };
+        assert!(!sync);
+    }
+
+    #[test]
+    fn index_sync_requires_explicit_flag() {
+        let cli = Cli::try_parse_from(["context-server", "index", "--input", "docs", "--sync"])
+            .expect("parse index command");
+        let Commands::Index { sync, .. } = cli.command else {
+            panic!("expected index command");
+        };
+        assert!(sync);
+    }
+
+    #[test]
+    fn removed_update_flag_is_rejected() {
+        let err = Cli::try_parse_from(["context-server", "index", "--input", "docs", "--update"])
+            .expect_err("removed flag must be rejected");
+        assert!(err.to_string().contains("--update"));
+    }
+
+    #[test]
+    fn empty_input_requires_sync() {
+        assert!(validate_collected_chunks(0, false).is_err());
+        validate_collected_chunks(0, true).expect("explicit empty sync");
+        validate_collected_chunks(1, false).expect("non-empty upsert");
+    }
 }

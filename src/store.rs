@@ -3,7 +3,7 @@
 use crate::embed::{self, MODEL_ID};
 use crate::index::{Chunk, CHUNKER_VERSION};
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, Connection, OpenFlags, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -31,8 +31,11 @@ pub struct Db {
     pub(crate) conn: Connection,
 }
 
+const SCHEMA_VERSION: &str = "1";
+
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
+        let existed = path.exists();
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         // `serve` and `index` may share the same WAL DB. Without a busy timeout,
         // a reader hitting a brief writer lock fails immediately with
@@ -71,7 +74,64 @@ CREATE TABLE IF NOT EXISTS files (
 );
 "#,
         )?;
-        Ok(Self { conn })
+        let db = Self { conn };
+        match db.get_meta("schema_version")? {
+            Some(version) if version == SCHEMA_VERSION => {}
+            Some(version) => bail!("unsupported schema_version {version:?}"),
+            None if existed && db.has_compatible_legacy_schema()? => {
+                db.set_meta("schema_version", SCHEMA_VERSION)?;
+                // Force the next index run to rebuild all chunks with current
+                // stable-ID/line-range semantics before readers accept it.
+                db.conn.execute("DELETE FROM meta WHERE key IN ('chunker_version', 'embedding_fingerprint')", [])?;
+            }
+            None if existed => bail!(
+                "database has no schema_version and its schema is incompatible; move it aside and re-run index"
+            ),
+            None => db.set_meta("schema_version", SCHEMA_VERSION)?,
+        }
+        Ok(db)
+    }
+
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("open {} read-only", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        let db = Self { conn };
+        let version = db
+            .get_meta("schema_version")?
+            .context("database has no schema_version; re-run index")?;
+        if version != SCHEMA_VERSION {
+            bail!("unsupported schema_version {version:?}");
+        }
+        Ok(db)
+    }
+
+    fn has_compatible_legacy_schema(&self) -> Result<bool> {
+        for (table, required) in [
+            (
+                "documents",
+                &[
+                    "id",
+                    "source_path",
+                    "chunk_index",
+                    "text",
+                    "headings",
+                    "metadata",
+                ][..],
+            ),
+            ("embeddings", &["id", "dim", "vector"][..]),
+            ("meta", &["key", "value"][..]),
+            ("files", &["source_path", "content_hash"][..]),
+        ] {
+            let mut statement = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let columns: HashSet<String> = statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<std::result::Result<_, _>>()?;
+            if !required.iter().all(|column| columns.contains(*column)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     #[allow(dead_code)]
@@ -173,6 +233,10 @@ CREATE TABLE IF NOT EXISTS files (
             Some(v) if v == CHUNKER_VERSION => {}
             _ => return Ok(true),
         }
+        match self.get_meta("embedding_fingerprint")? {
+            Some(v) if v == embed::EMBEDDING_FINGERPRINT => {}
+            _ => return Ok(true),
+        }
         if self.file_hashes()?.is_empty() {
             return Ok(true);
         }
@@ -216,39 +280,29 @@ CREATE TABLE IF NOT EXISTS files (
 
     /// Ensure DB embeddings were built with the current model.
     pub fn ensure_model_compatible(&self) -> Result<()> {
-        let model = self.get_meta("model_id")?;
-        let dim = self.get_meta("dim")?;
-
-        match (model.as_deref(), dim.as_deref()) {
-            (None, _) | (_, None) => {
-                // Legacy DBs from before meta existed — verify dim from first embedding.
-                let mut stmt = self.conn.prepare("SELECT dim FROM embeddings LIMIT 1")?;
-                let mut rows = stmt.query([])?;
-                if let Some(row) = rows.next()? {
-                    let d: i64 = row.get(0)?;
-                    if d as usize != embed::DIM {
-                        bail!(
-                            "database embedding dim {d} != {MODEL_ID} dim {}; re-run index",
-                            embed::DIM
-                        );
-                    }
-                }
-                Ok(())
-            }
-            (Some(m), Some(d)) => {
-                if m != MODEL_ID {
-                    bail!("database model {m:?} != current {MODEL_ID:?}; re-run index");
-                }
-                let d: usize = d.parse().context("parse meta.dim")?;
-                if d != embed::DIM {
-                    bail!(
-                        "database dim {d} != {MODEL_ID} dim {}; re-run index",
-                        embed::DIM
-                    );
-                }
-                Ok(())
-            }
+        let fingerprint = self
+            .get_meta("embedding_fingerprint")?
+            .context("database has no embedding_fingerprint; re-run index")?;
+        if fingerprint != embed::EMBEDDING_FINGERPRINT {
+            bail!("database embedding_fingerprint is incompatible; re-run index");
         }
+        let model = self
+            .get_meta("model_id")?
+            .context("database has no model_id; re-run index")?;
+        if model != MODEL_ID {
+            bail!("database model {model:?} != current {MODEL_ID:?}; re-run index");
+        }
+        let dim = self
+            .get_meta("dim")?
+            .context("database has no dim; re-run index")?;
+        let dim: usize = dim.parse().context("parse meta.dim")?;
+        if dim != embed::DIM {
+            bail!(
+                "database dim {dim} != {MODEL_ID} dim {}; re-run index",
+                embed::DIM
+            );
+        }
+        Ok(())
     }
 
     pub fn count(&self) -> Result<usize> {
@@ -258,13 +312,18 @@ CREATE TABLE IF NOT EXISTS files (
         Ok(n as usize)
     }
 
-    pub fn list(&self, limit: usize, path_prefix: Option<&str>) -> Result<Vec<Document>> {
+    pub fn list_page(
+        &self,
+        limit: usize,
+        offset: usize,
+        path_prefix: Option<&str>,
+    ) -> Result<Vec<Document>> {
         let prefix = path_prefix.unwrap_or("").trim();
         let rows = if prefix.is_empty() {
             let mut stmt = self.conn.prepare(
-                "SELECT id, source_path, chunk_index, text, headings, metadata FROM documents ORDER BY source_path, chunk_index LIMIT ?1",
+                "SELECT id, source_path, chunk_index, text, headings, metadata FROM documents ORDER BY source_path, chunk_index LIMIT ?1 OFFSET ?2",
             )?;
-            let mapped = stmt.query_map(params![limit as i64], |row| {
+            let mapped = stmt.query_map(params![limit as i64, offset as i64], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -284,9 +343,9 @@ CREATE TABLE IF NOT EXISTS files (
                     .replace('_', "\\_")
             );
             let mut stmt = self.conn.prepare(
-                "SELECT id, source_path, chunk_index, text, headings, metadata FROM documents WHERE source_path LIKE ?1 ESCAPE '\\' ORDER BY source_path, chunk_index LIMIT ?2",
+                "SELECT id, source_path, chunk_index, text, headings, metadata FROM documents WHERE source_path LIKE ?1 ESCAPE '\\' ORDER BY source_path, chunk_index LIMIT ?2 OFFSET ?3",
             )?;
-            let mapped = stmt.query_map(params![escaped, limit as i64], |row| {
+            let mapped = stmt.query_map(params![escaped, limit as i64, offset as i64], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -450,6 +509,18 @@ fn write_index_meta(tx: &Transaction<'_>, instructions: Option<&str>) -> Result<
     upsert_meta(tx, "model_id", MODEL_ID)?;
     upsert_meta(tx, "dim", &embed::DIM.to_string())?;
     upsert_meta(tx, "chunker_version", CHUNKER_VERSION)?;
+    let generation: i64 = tx
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'generation'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+        + 1;
+    upsert_meta(tx, "generation", &generation.to_string())?;
+    upsert_meta(tx, "embedding_fingerprint", embed::EMBEDDING_FINGERPRINT)?;
     if let Some(text) = instructions {
         upsert_meta(tx, "instructions", text)?;
     }
@@ -611,6 +682,38 @@ mod tests {
     }
 
     #[test]
+    fn missing_embedding_fingerprint_requires_reembed_and_blocks_search() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let mut db = Db::open(&path).unwrap();
+        let chunks = vec![chunk("a.md", "hello")];
+        db.replace_all(&chunks, &[dummy_vec()], None).unwrap();
+        db.conn
+            .execute("DELETE FROM meta WHERE key = 'embedding_fingerprint'", [])
+            .unwrap();
+
+        assert!(db.needs_full_reembed().unwrap());
+        let err = db
+            .ensure_model_compatible()
+            .expect_err("ambiguous provenance must block search");
+        assert!(err.to_string().contains("embedding_fingerprint"), "{err:#}");
+    }
+
+    #[test]
+    fn mismatched_embedding_fingerprint_requires_reembed_and_blocks_search() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let mut db = Db::open(&path).unwrap();
+        let chunks = vec![chunk("a.md", "hello")];
+        db.replace_all(&chunks, &[dummy_vec()], None).unwrap();
+        db.set_meta("embedding_fingerprint", "different-model-config")
+            .unwrap();
+
+        assert!(db.needs_full_reembed().unwrap());
+        assert!(db.ensure_model_compatible().is_err());
+    }
+
+    #[test]
     fn legacy_db_without_file_hashes_needs_full_reembed() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("t.db");
@@ -634,15 +737,15 @@ mod tests {
         let vectors = vec![dummy_vec(), dummy_vec(), dummy_vec()];
         db.replace_all(&chunks, &vectors, None).unwrap();
 
-        let all = db.list(10, None).unwrap();
+        let all = db.list_page(10, 0, None).unwrap();
         assert_eq!(all.len(), 3);
 
-        let teams = db.list(10, Some("teams/")).unwrap();
+        let teams = db.list_page(10, 0, Some("teams/")).unwrap();
         assert_eq!(teams.len(), 2);
         assert_eq!(teams[0].source_path, "teams/eng.md");
         assert_eq!(teams[1].source_path, "teams/storage.md");
 
-        let limited = db.list(1, Some("teams/")).unwrap();
+        let limited = db.list_page(1, 0, Some("teams/")).unwrap();
         assert_eq!(limited.len(), 1);
         assert_eq!(limited[0].source_path, "teams/eng.md");
     }
