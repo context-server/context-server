@@ -245,8 +245,8 @@ impl Index {
             ),
             SearchMode::Hybrid => hybrid_rrf(&self.docs, &dense_scores, &lexical_scores, limit),
         };
-        // Drop zero-score hits that slipped through when everything was filtered out of ranking ties
-        Ok(hits
+        // Drop zero-score hits that slipped through when everything was filtered out of ranking ties.
+        let hits: Vec<ResultHit> = hits
             .into_iter()
             .filter(|h| {
                 filter.is_empty()
@@ -256,7 +256,47 @@ impl Index {
                         .find(|d| d.source_path == h.source_path && d.chunk_index == h.chunk_index)
                         .is_some_and(|d| filter.matches(d))
             })
-            .collect())
+            .collect();
+
+        // Markdown sections are indexed independently, but answers often span
+        // adjacent sections. For example, a `Membership` section may identify
+        // a group while the following `People` section contains its names.
+        // Preserve the ranked hits and add a small amount of same-document
+        // context so callers do not have to guess which neighboring citation
+        // to fetch. Context hits are clearly marked by their zero ranking
+        // scores and are deduplicated by citation.
+        let mut expanded = hits.clone();
+        for hit in &hits {
+            for neighbor_index in [
+                hit.chunk_index.checked_sub(1),
+                hit.chunk_index.checked_add(1),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let Some(doc) = self
+                    .docs
+                    .iter()
+                    .find(|d| d.source_path == hit.source_path && d.chunk_index == neighbor_index)
+                else {
+                    continue;
+                };
+                if !filter.matches(doc)
+                    || expanded.iter().any(|h| {
+                        h.source_path == doc.source_path && h.chunk_index == doc.chunk_index
+                    })
+                {
+                    continue;
+                }
+                let doc_index = self
+                    .docs
+                    .iter()
+                    .position(|candidate| std::ptr::eq(candidate, doc))
+                    .expect("neighbor document came from index");
+                expanded.push(hit_from(&self.docs, doc_index, 0.0, 0.0, 0.0));
+            }
+        }
+        Ok(expanded)
     }
 
     #[allow(dead_code)] // used by unit tests; kept for dense-only callers
