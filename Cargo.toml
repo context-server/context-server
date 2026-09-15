@@ -2,7 +2,7 @@
 name = "context-server"
 version = "0.1.5"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.90"
 description = "Lightweight MCP server for semantic search over organizational markdown"
 license = "MIT"
 readme = "README.md"
