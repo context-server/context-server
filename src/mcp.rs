@@ -436,7 +436,7 @@ mod tests {
     fn rewrite_db(path: &std::path::Path, docs: &[(&str, &str)]) {
         let mut db = Db::open(path).unwrap();
         let chunks: Vec<Chunk> = docs.iter().map(|(p, t)| chunk(p, t)).collect();
-        let vectors: Vec<Vec<f32>> = chunks.iter().map(|_| vec![1.0f32; embed::DIM]).collect();
+        let vectors: Vec<Vec<f32>> = chunks.iter().map(|_| vec![1.0f32; embed::dim()]).collect();
         db.replace_all(&chunks, &vectors, None).unwrap();
     }
 
