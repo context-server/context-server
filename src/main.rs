@@ -257,7 +257,7 @@ fn run_index(
         files.len(),
         input.display(),
         db_path.display(),
-        embed::MODEL_ID,
+        embed::model_id(),
         if force_full && !full {
             " [full re-embed: model or chunker changed]"
         } else if full {
@@ -387,7 +387,7 @@ async fn run_serve(db_spec: String) -> Result<()> {
         "context-server: serving MCP stdio ({} chunks from {}, hybrid search, {})",
         n,
         db_path.display(),
-        embed::MODEL_ID
+        embed::model_id()
     );
     let server = service.serve(rmcp::transport::stdio()).await?;
     server.waiting().await?;
@@ -570,7 +570,7 @@ fn run_model_status() -> Result<()> {
     let path = embed::model_cache_dir()?;
     println!(
         "model={} cached={} path={}",
-        embed::MODEL_ID,
+        embed::model_id(),
         embed::model_is_cached()?,
         path.display()
     );
@@ -581,7 +581,7 @@ fn run_model_download() -> Result<()> {
     let _ = embed::Embedder::new()?;
     println!(
         "model={} ready at {}",
-        embed::MODEL_ID,
+        embed::model_id(),
         embed::model_cache_dir()?.display()
     );
     Ok(())
