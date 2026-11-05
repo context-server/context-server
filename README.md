@@ -31,9 +31,53 @@ context-server serve --db context.db
 
 Wheels: Linux x86_64/aarch64 (`manylinux_2_39` / glibc 2.39+, e.g. Ubuntu 24.04+) and macOS Apple Silicon.
 
-The first embedding run downloads BGE-small-en-v1.5 into
+The first embedding run downloads the embedding model into
 `$XDG_CACHE_HOME/context-server/fastembed/` (or `~/.cache/...`; once, tens of MB).
 Override with `FASTEMBED_CACHE_DIR` or `HF_HOME`.
+
+### Non-English corpora: pick a multilingual model
+
+The default model is English-only. On a non-English corpus the dense half of
+hybrid search does not merely get weaker — it returns the same few chunks for
+unrelated queries, and hybrid then scores *below* plain BM25. Select a
+multilingual model with `CONTEXT_SERVER_MODEL`:
+
+```bash
+export CONTEXT_SERVER_MODEL=e5-small     # multilingual-e5-small, 384-d
+context-server index --input ./docs --db context.db
+context-server serve --db context.db     # same variable at search time
+```
+
+| key | model | dim |
+|---|---|---|
+| `bge-small-en` (default) | BGE-small-en-v1.5 | 384 |
+| `e5-small` | multilingual-e5-small | 384 |
+| `e5-base` | multilingual-e5-base | 768 |
+| `paraphrase-ml` | paraphrase-multilingual-MiniLM-L12-v2 | 384 |
+| `bge-m3` | BGE-M3 | 1024 |
+
+Each model carries its own retrieval prefixes (BGE instructs the query only;
+E5 needs `query: ` / `passage: ` on both sides) and its own fingerprint, so a
+database built with one model refuses to be searched with another — switch the
+variable and re-run `index`.
+
+Measured on a 4932-chunk Russian corpus, hit@5 over 20 queries (same
+chunking, only the model changed):
+
+| mode | `bge-small-en` | `e5-small` | `e5-base` |
+|---|---|---|---|
+| dense | 3/20 | 16/20 | 18/20 |
+| hybrid | 14/20 | 16/20 | **19/20** |
+| lexical | 15/20 | 15/20 | 15/20 |
+
+`lexical` is the control: BM25 is untouched, so the whole difference comes
+from the dense half. Note that with the English model hybrid scored *below*
+lexical — the dense half was subtracting.
+
+Dense results also stopped collapsing onto attractor chunks. Distinct chunks
+per 100 dense results: 59 with `bge-small-en`, 97 with `e5-small`, 96 with
+`e5-base`. One chunk came back for 9 of 20 unrelated queries with the English
+model; the worst repeat with either multilingual model is 2.
 
 ### Optional: tell the agent when to use this corpus
 
@@ -95,7 +139,7 @@ cargo build --release
 
 ## Search
 
-Default mode is **hybrid**: dense cosine (BGE-small-en-v1.5) plus BM25, fused with reciprocal rank fusion. Dense catches paraphrase; BM25 catches exact tokens (usernames, acronyms, IDs).
+Default mode is **hybrid**: dense cosine (the selected embedding model) plus BM25, fused with reciprocal rank fusion. Dense catches paraphrase; BM25 catches exact tokens (usernames, acronyms, IDs).
 
 ```bash
 context-server search --db context.db --mode hybrid "query"   # default
@@ -142,7 +186,7 @@ context-server serve  --db <local path | gs://…>
 context-server search --db <local path | gs://…> [--limit N] [--mode hybrid|dense|lexical]
                       [--path-prefix P] [--heading H] [--tag T] <query>
 context-server get    --db <local path | gs://…> --path FILE [--chunk N]
-context-server embed  <query>         # smoke-test query embedding (BGE instruction)
+context-server embed  <query>         # smoke-test query embedding (model's query instruction)
 ```
 
 `index` is upsert-only by default. Use `--sync` only when the database should
@@ -184,7 +228,7 @@ gh workflow run release.yml --repo context-server/context-server
 
 ## Design notes
 
-Under the hood: fastembed BGE-small-en-v1.5 (384-d, L2-normalized; query instruction applied at search time), rusqlite with float32 blobs, [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) over stdio. `index` is incremental by file: unchanged files (same post-chunk content hash) are skipped, so the embedding model is not loaded. Indexing safely upserts by default. Pass `--sync` to also remove database paths missing from `--input`, or `--full` to re-embed everything collected. A model or chunker migration requires a complete-corpus `--sync` run.
+Under the hood: fastembed (L2-normalized vectors; per-model query/passage instructions applied at index and search time; BGE-small-en-v1.5 by default, see `CONTEXT_SERVER_MODEL`), rusqlite with float32 blobs, [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) over stdio. `index` is incremental by file: unchanged files (same post-chunk content hash) are skipped, so the embedding model is not loaded. Indexing safely upserts by default. Pass `--sync` to also remove database paths missing from `--input`, or `--full` to re-embed everything collected. A model or chunker migration requires a complete-corpus `--sync` run.
 
 More detail and roadmap: [PLAN.md](PLAN.md).
 

@@ -1,6 +1,6 @@
 //! SQLite storage for chunks and embeddings.
 
-use crate::embed::{self, MODEL_ID};
+use crate::embed;
 use crate::index::{Chunk, CHUNKER_VERSION};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, Transaction};
@@ -222,11 +222,11 @@ CREATE TABLE IF NOT EXISTS files (
             return Ok(false);
         }
         match self.get_meta("model_id")? {
-            Some(m) if m == MODEL_ID => {}
+            Some(m) if m == embed::model_id() => {}
             _ => return Ok(true),
         }
         match self.get_meta("dim")? {
-            Some(d) if d == embed::DIM.to_string() => {}
+            Some(d) if d == embed::dim().to_string() => {}
             _ => return Ok(true),
         }
         match self.get_meta("chunker_version")? {
@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS files (
             _ => return Ok(true),
         }
         match self.get_meta("embedding_fingerprint")? {
-            Some(v) if v == embed::EMBEDDING_FINGERPRINT => {}
+            Some(v) if v == embed::embedding_fingerprint() => {}
             _ => return Ok(true),
         }
         if self.file_hashes()?.is_empty() {
@@ -283,23 +283,24 @@ CREATE TABLE IF NOT EXISTS files (
         let fingerprint = self
             .get_meta("embedding_fingerprint")?
             .context("database has no embedding_fingerprint; re-run index")?;
-        if fingerprint != embed::EMBEDDING_FINGERPRINT {
+        if fingerprint != embed::embedding_fingerprint() {
             bail!("database embedding_fingerprint is incompatible; re-run index");
         }
         let model = self
             .get_meta("model_id")?
             .context("database has no model_id; re-run index")?;
-        if model != MODEL_ID {
-            bail!("database model {model:?} != current {MODEL_ID:?}; re-run index");
+        let want = embed::model_id();
+        if model != want {
+            bail!("database model {model:?} != current {want:?}; re-run index");
         }
         let dim = self
             .get_meta("dim")?
             .context("database has no dim; re-run index")?;
         let dim: usize = dim.parse().context("parse meta.dim")?;
-        if dim != embed::DIM {
+        if dim != embed::dim() {
             bail!(
-                "database dim {dim} != {MODEL_ID} dim {}; re-run index",
-                embed::DIM
+                "database dim {dim} != {want} dim {}; re-run index",
+                embed::dim()
             );
         }
         Ok(())
@@ -423,12 +424,13 @@ ORDER BY d.id
         let shown: Vec<&str> = sources.iter().take(5).map(|s| s.as_str()).collect();
         let extra = if sources.len() > 5 { ", …" } else { "" };
         Ok(format!(
-            "{} chunks across {} files ({}{}) [{MODEL_ID}/{}d]",
+            "{} chunks across {} files ({}{}) [{}/{}d]",
             n,
             sources.len(),
             shown.join(", "),
             extra,
-            embed::DIM
+            embed::model_id(),
+            embed::dim()
         ))
     }
 }
@@ -453,11 +455,11 @@ fn insert_chunks(tx: &Transaction<'_>, chunks: &[Chunk], vectors: &[Vec<f32>]) -
         if vec.is_empty() {
             bail!("empty vector for {}[{}]", c.source_path, c.chunk_index);
         }
-        if vec.len() != embed::DIM {
+        if vec.len() != embed::dim() {
             bail!(
                 "vector dim {} != expected {} for {}[{}]",
                 vec.len(),
-                embed::DIM,
+                embed::dim(),
                 c.source_path,
                 c.chunk_index
             );
@@ -506,8 +508,8 @@ fn upsert_meta(tx: &Transaction<'_>, key: &str, value: &str) -> Result<()> {
 }
 
 fn write_index_meta(tx: &Transaction<'_>, instructions: Option<&str>) -> Result<()> {
-    upsert_meta(tx, "model_id", MODEL_ID)?;
-    upsert_meta(tx, "dim", &embed::DIM.to_string())?;
+    upsert_meta(tx, "model_id", embed::model_id())?;
+    upsert_meta(tx, "dim", &embed::dim().to_string())?;
     upsert_meta(tx, "chunker_version", CHUNKER_VERSION)?;
     let generation: i64 = tx
         .query_row(
@@ -520,7 +522,7 @@ fn write_index_meta(tx: &Transaction<'_>, instructions: Option<&str>) -> Result<
         .unwrap_or(0)
         + 1;
     upsert_meta(tx, "generation", &generation.to_string())?;
-    upsert_meta(tx, "embedding_fingerprint", embed::EMBEDDING_FINGERPRINT)?;
+    upsert_meta(tx, "embedding_fingerprint", embed::embedding_fingerprint())?;
     if let Some(text) = instructions {
         upsert_meta(tx, "instructions", text)?;
     }
@@ -565,13 +567,13 @@ mod tests {
             headings: vec!["H".into()],
             metadata: serde_json::Map::new(),
         }];
-        let vectors = vec![vec![1.0f32; embed::DIM]];
+        let vectors = vec![vec![1.0f32; embed::dim()]];
         db.replace_all(&chunks, &vectors, None).unwrap();
         assert_eq!(db.count().unwrap(), 1);
         db.ensure_model_compatible().unwrap();
         let docs = db.load_all().unwrap();
         assert_eq!(docs[0].text, "hello");
-        assert_eq!(docs[0].vector.len(), embed::DIM);
+        assert_eq!(docs[0].vector.len(), embed::dim());
     }
 
     #[test]
@@ -586,7 +588,7 @@ mod tests {
             headings: vec![],
             metadata: serde_json::Map::new(),
         }];
-        let vectors = vec![vec![1.0f32; embed::DIM]];
+        let vectors = vec![vec![1.0f32; embed::dim()]];
         db.replace_all(&chunks, &vectors, Some("use for org docs"))
             .unwrap();
         assert_eq!(
@@ -622,7 +624,7 @@ mod tests {
     }
 
     fn dummy_vec() -> Vec<f32> {
-        vec![1.0f32; embed::DIM]
+        vec![1.0f32; embed::dim()]
     }
 
     #[test]
