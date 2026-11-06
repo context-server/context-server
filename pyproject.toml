@@ -16,3 +16,11 @@ Repository = "https://github.com/context-server/context-server"
 [tool.maturin]
 bindings = "bin"
 strip = true
+
+# The prebuilt ONNX Runtime archives that ort-sys links are compiled against
+# macOS 13.4, while rustc defaults aarch64-apple-darwin to an 11.0 deployment
+# target. Linking with 11.0 leaves ___isPlatformVersionAtLeast (used by
+# onnxruntime's CoreML objects) undefined, so state the real floor here. maturin
+# honours this for both CI and release builds and skips its 11.0 default.
+[tool.maturin.target.aarch64-apple-darwin]
+macos-deployment-target = "13.4"
