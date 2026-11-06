@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.90
+      - uses: dtolnay/rust-toolchain@1.92
       - name: Check minimum supported Rust
         run: cargo check --locked
 
@@ -176,6 +176,12 @@ jobs:
 
       # ort does not ship prebuilt ONNX Runtime for x86_64-apple-darwin.
       - uses: PyO3/maturin-action@v1
+        env:
+          # ort's prebuilt CoreML objects use @available, whose runtime helper
+          # (___isPlatformVersionAtLeast) lives in libclang_rt.osx.a. rustc
+          # links with -nodefaultlibs and does not add that archive, so the
+          # symbol is undefined unless clang is told to link its runtime lib.
+          RUSTFLAGS: -Clink-arg=-fapple-link-rtlib
         with:
           target: aarch64-apple-darwin
           args: --release --locked --out dist

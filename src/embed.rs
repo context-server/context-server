@@ -6,7 +6,7 @@
 //! another.
 
 use anyhow::{bail, Context, Result};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -137,7 +137,7 @@ impl Embedder {
         std::fs::create_dir_all(&cache_dir)
             .with_context(|| format!("create model cache dir {}", cache_dir.display()))?;
         let model = TextEmbedding::try_new(
-            InitOptions::new(spec.model.clone())
+            TextInitOptions::new(spec.model.clone())
                 .with_cache_dir(cache_dir)
                 .with_show_download_progress(true),
         )
