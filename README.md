@@ -29,7 +29,7 @@ context-server search --db context.db "how do we handle backports"
 context-server serve --db context.db
 ```
 
-Wheels: Linux x86_64/aarch64 (`manylinux_2_39` / glibc 2.39+, e.g. Ubuntu 24.04+) and macOS Apple Silicon (macOS 13.4+, the floor of the bundled ONNX Runtime).
+Wheels: Linux x86_64/aarch64 (`manylinux_2_39` / glibc 2.39+, e.g. Ubuntu 24.04+) and macOS Apple Silicon (macOS 14.0+; the bundled ONNX Runtime needs 13.4, and PyPI only accepts macOS platform tags with a zero minor version).
 
 The first embedding run downloads the embedding model into
 `$XDG_CACHE_HOME/context-server/fastembed/` (or `~/.cache/...`; once, tens of MB).
