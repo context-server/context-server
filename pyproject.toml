@@ -22,5 +22,12 @@ strip = true
 # target. Linking with 11.0 leaves ___isPlatformVersionAtLeast (used by
 # onnxruntime's CoreML objects) undefined, so state the real floor here. maturin
 # honours this for both CI and release builds and skips its 11.0 default.
+#
+# Use 14.0, not 13.4: maturin turns this value verbatim into the wheel's
+# platform tag, and PyPI only accepts macOS 11+ tags with a zero minor version
+# (macosx_13_0_arm64, macosx_14_0_arm64, ...). "13.4" produced
+# macosx_13_4_arm64, which PyPI rejects with "unsupported platform tag". 14.0 is
+# the smallest tag that still declares a floor at or above the 13.4 the prebuilt
+# runtime requires.
 [tool.maturin.target.aarch64-apple-darwin]
-macos-deployment-target = "13.4"
+macos-deployment-target = "14.0"
