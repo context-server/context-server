@@ -1,11 +1,12 @@
 //! MCP stdio server tools.
 
+use crate::artifacts::Artifacts;
 use crate::embed::Embedder;
 use crate::search::{Index, SearchFilter, SearchMode};
 use crate::store::Db;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerConfig},
+    model::{CallToolResult, ErrorData, ServerCapabilities, ServerConfig},
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use std::path::{Path, PathBuf};
@@ -64,7 +65,16 @@ pub struct GetChunkByIdRequest {
     pub chunk_id: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetArtifactRequest {
+    #[schemars(
+        description = "Exact configured artifact name, e.g. rubrics/epic-grooming (not a file path)."
+    )]
+    pub name: String,
+}
+
 pub struct ContextService {
+    artifacts: Artifacts,
     db: Mutex<Db>,
     index: Mutex<Index>,
     db_path: PathBuf,
@@ -132,7 +142,13 @@ source_path#chunk_index (fetch full text via get_document). For unrelated \
 general questions, answer normally without forcing a search.";
 
 impl ContextService {
-    pub fn new(db: Db, index: Index, embedder: Embedder, db_path: PathBuf) -> Self {
+    pub fn new(
+        db: Db,
+        index: Index,
+        embedder: Embedder,
+        db_path: PathBuf,
+        artifacts: Artifacts,
+    ) -> Self {
         let instructions = db
             .get_meta("instructions")
             .ok()
@@ -141,6 +157,7 @@ impl ContextService {
             .unwrap_or_else(|| DEFAULT_INSTRUCTIONS.to_string());
         let db_stamp = db_stamp_for(&db_path);
         Self {
+            artifacts,
             db: Mutex::new(db),
             index: Mutex::new(index),
             db_path,
@@ -218,6 +235,21 @@ fn filter_from(
 
 #[tool_router]
 impl ContextService {
+    #[tool(
+        description = "Fetch an exact named JSON artifact. Returns the complete artifact and its SHA-256 content digest, without semantic search or chunking."
+    )]
+    fn get_artifact(
+        &self,
+        Parameters(GetArtifactRequest { name }): Parameters<GetArtifactRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.artifacts
+            .get(&name)
+            .map(CallToolResult::structured)
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("no configured artifact named {name:?}"), None)
+            })
+    }
+
     #[tool(
         description = "REQUIRED for org/knowledge questions: search the indexed markdown knowledge base (people, teams, ownership, processes, guides). Call this instead of guessing whenever the user asks who owns something, how a process works, or anything that may be in team/org docs. Returns ranked passages with scores and citations (source_path#chunk_index). Optional path_prefix/heading/tag narrow the corpus."
     )]

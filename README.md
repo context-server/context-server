@@ -159,8 +159,11 @@ context-server get --db context.db --path teams/storage.md --chunk 0
 | `semantic_search` | Ranked passages + scores; optional `path_prefix` / `heading` / `tag` filters |
 | `list_documents` | Indexed chunks; optional `path_prefix` |
 | `get_document` | Full chunk by citation (`source_path` + `chunk_index`), or all chunks for a path |
+| `get_artifact` | Complete structured JSON object by exact configured name, with a SHA-256 digest |
 
 Search hits cite chunks as `source_path#chunk_index`. Call `get_document` to pull the full text for quoting.
+
+To serve structured artifacts alongside Markdown, run `context-server serve --db context.db --artifacts artifacts.json`. The manifest is a JSON object mapping names to objects (for example, `{"rubrics/example":{"checks":[]}}`), loaded at startup. The tool returns `{name, digest, artifact}` as MCP structured content. Names are lookup keys, not filesystem paths. Artifacts are not chunked, indexed, or searched; restart the server to load a revised manifest.
 
 ## Remote database (GCS)
 

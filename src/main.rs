@@ -1,3 +1,4 @@
+mod artifacts;
 mod bm25;
 mod embed;
 mod eval;
@@ -57,6 +58,9 @@ enum Commands {
         /// `gs://projects/PROJECT/buckets/BUCKET/objects/OBJECT`
         #[arg(long, default_value = "context.db")]
         db: String,
+        /// Optional JSON object mapping artifact names to JSON objects
+        #[arg(long)]
+        artifacts: Option<PathBuf>,
     },
     /// Search the database (CLI)
     Search {
@@ -147,9 +151,9 @@ fn main() -> Result<()> {
             instructions,
             instructions_file,
         }),
-        Commands::Serve { db } => {
+        Commands::Serve { db, artifacts } => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(run_serve(db))
+            rt.block_on(run_serve(db, artifacts))
         }
         Commands::Search {
             db,
@@ -358,7 +362,7 @@ fn validate_index_mode(sync: bool, migration_required: bool) -> Result<()> {
     Ok(())
 }
 
-async fn run_serve(db_spec: String) -> Result<()> {
+async fn run_serve(db_spec: String, manifest: Option<PathBuf>) -> Result<()> {
     use rmcp::ServiceExt;
 
     tracing_subscriber::fmt()
@@ -370,6 +374,11 @@ async fn run_serve(db_spec: String) -> Result<()> {
         .with_ansi(false)
         .init();
 
+    let artifacts = manifest
+        .as_deref()
+        .map(artifacts::Artifacts::load)
+        .transpose()?
+        .unwrap_or_default();
     let db_path = remote::resolve_db(&db_spec).await?;
     let db = store::Db::open_read_only(&db_path)?;
     let n = db.count()?;
@@ -381,7 +390,7 @@ async fn run_serve(db_spec: String) -> Result<()> {
     }
     let index = search::Index::load(&db)?;
     let embedder = embed::Embedder::new()?;
-    let service = mcp::ContextService::new(db, index, embedder, db_path.clone());
+    let service = mcp::ContextService::new(db, index, embedder, db_path.clone(), artifacts);
 
     eprintln!(
         "context-server: serving MCP stdio ({} chunks from {}, hybrid search, {})",
