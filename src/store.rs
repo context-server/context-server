@@ -237,10 +237,7 @@ CREATE TABLE IF NOT EXISTS files (
             Some(v) if v == embed::embedding_fingerprint() => {}
             _ => return Ok(true),
         }
-        if self.file_hashes()?.is_empty() {
-            return Ok(true);
-        }
-        Ok(false)
+        Ok(self.file_hashes()?.is_empty())
     }
 
     /// Apply per-file upserts and optional deletes in one transaction.
